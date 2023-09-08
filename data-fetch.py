@@ -61,5 +61,9 @@ dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/')
 
 # COMMAND ----------
 
+# MAGIC %sh du -h /dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data
+
+# COMMAND ----------
+
 # Clean up empty local temp folders
 rmtree(DATA_DIR)
