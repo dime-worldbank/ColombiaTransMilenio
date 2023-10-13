@@ -48,11 +48,12 @@ for blob in tqdm(blobs):
 
         # upload to dbfs, aka the enterprise data lake
         dbutils.fs.cp(f"file:{target}", f"dbfs:{target}")
+        print(f'{target} UPLOADED')
 
         # remove file after uploading to dbfs to free up local fs space
         os.remove(target)
-    else:
-        print(f'{target} already exists, skipping')
+    #else:
+        #print(f'{target} already exists, skipping')
 
 # COMMAND ----------
 
@@ -62,6 +63,10 @@ dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/')
 # COMMAND ----------
 
 # MAGIC %sh du -h /dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data
+
+# COMMAND ----------
+
+dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/ValidacionZonal')
 
 # COMMAND ----------
 
