@@ -12,8 +12,8 @@ from tqdm import tqdm
 # COMMAND ----------
 
 DATA_DIR = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data'
-os.makedirs(DATA_DIR, exist_ok=True)
-dbutils.fs.mkdirs(DATA_DIR)
+os.makedirs(DATA_DIR, exist_ok=True) # Creates the given directory if it does not exist
+dbutils.fs.mkdirs(DATA_DIR) # Creates the given directory if it does not exist
 
 # COMMAND ----------
 
