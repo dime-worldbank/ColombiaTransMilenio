@@ -18,7 +18,7 @@
 
 ## import_packages.py
 ### spark etc
-# import rarfile
+import rarfile
 import findspark, os, pyspark, time, sys
 import pyspark.sql.functions as F
 from pyspark.sql.functions import pandas_udf, PandasUDFType
