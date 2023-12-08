@@ -109,7 +109,9 @@ for folder in ['ValTroncal Nov2017/', 'ValZonal Nov2017/']:
 
 # COMMAND ----------
 
-len(dbutils.fs.ls(raw2017_dir))
+f = "/dbfs" + ingestion2017_dir + "/decompressed/ValZonal Nov2017/16. valzonal_16nov2017/valzonal_16nov2017_ETIB.gz"
+Archive( f ).extractall("/dbfs" + raw2017_dir )
+df = pd.read_csv('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/2017/valzonal_16nov2017_ETIB')
 
 # COMMAND ----------
 
