@@ -15,6 +15,11 @@ from pyunpack import Archive
 
 # COMMAND ----------
 
+# Trying to export from DBFS to local machine
+#dbutils.fs.put("/FileStore/my-stuff/my-file.txt", "This is the actual text that will be saved to disk. Like a 'Hello world!' example")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC # Create Workspace to transfer files from ingestion point and download point
 # MAGIC - Ingestion point from OneDrive: /mnt/DAP/data/ColombiaProject-TransMilenioRawData/Documents
@@ -35,7 +40,14 @@ dbutils.fs.mkdirs(path + '/Workspace/Clean/')
 
 # MAGIC %md
 # MAGIC Two different structures
-# MAGIC - Since 2020, I have data organized by Troncal, Zonal, Dual, Salidas, Recargas
+# MAGIC - Since 2020, I have data organized by Troncal, Zonal, Dual, Salidas, Recargas. All daily files in one of the following folders **path + '/Workspace/Raw/since2020/ + ...**
+# MAGIC   - Recargas
+# MAGIC   - Salidas
+# MAGIC   - ValidacionDual
+# MAGIC   - ValidacionTroncal
+# MAGIC   - ValidacionZonal
+# MAGIC
+# MAGIC
 # MAGIC - For 2017, I have
 # MAGIC   - Monthly csv files with all validations until September
 # MAGIC   - Zonal and Troncal separate folders with daily files
@@ -121,42 +133,16 @@ df = pd.read_csv('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspa
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Create a folder inside the Workspace folder that follows the same structure that the Data folder to put both the data in Data folder and in the Documents folder.
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/Recargas/')
-
-# COMMAND ----------
-
-os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/Recargas/2023')
-
-# COMMAND ----------
-
-os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/Recargas/2023')
-
-# COMMAND ----------
-
-os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/Recargas')
-
-# COMMAND ----------
-
-raw2020_dir = path + '/Workspace/Raw/since2020/'
-dbutils.fs.mkdirs(raw2020_dir)
-
-# COMMAND ----------
-
-for d in ['Recargas/', 'Salidas/', 'ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
-    dbutils.fs.mkdirs(raw2020_dir + d)
+# MAGIC Create a folder inside the Workspace folder that follows the same structure that the Data folder to put both the data in the Data folder and in the Documents folder.
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Check that we have the right amount of files**
+# MAGIC ## Ingestion point: check that we have the right amount of files
+
+# COMMAND ----------
+
+dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Documents/')
 
 # COMMAND ----------
 
@@ -180,10 +166,109 @@ for f in folders:
 
 # COMMAND ----------
 
-df = pd.read_csv('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/ValidacionZonal/validacionZonal20230529.csv')
-dftest = df.head(20)
-# dftest.to_csv('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Documents/test.csv')
+names = [f[0][77:] for f in files]
+# check for duplicates
+rawnames = [n[:15] for n in names]
+print(len(rawnames) == len(names))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Check Data folder structure
+
+# COMMAND ----------
+
+os.listdir('/dbfs' + path + '/Data/')
+
+# COMMAND ----------
+
+# os.listdir('/dbfs' + path + '/Data/Recargas/')
+# os.listdir('/dbfs' + path + '/Data/Recargas/2023')
+
+# COMMAND ----------
+
+# os.listdir('/dbfs' + path + '/Data/ValidacionZonal')
+# os.listdir('/dbfs' + path + '/Data/ValidacionZonal/2024')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Create folders
+
+# COMMAND ----------
+
+raw2020_dir = path + '/Workspace/Raw/since2020/'
+dbutils.fs.mkdirs(raw2020_dir)
+
+# COMMAND ----------
+
+for d in ['Recargas/', 'Salidas/', 'ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
+    dbutils.fs.mkdirs(raw2020_dir + d)
+
+# COMMAND ----------
+
+os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/since2020/ValidacionZonal')
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Move daily validaciones files
+# MAGIC
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **1. Move from query point (Data folder)**
 
 # COMMAND ----------
 
 
+raw2020_dir = path + '/Workspace/Raw/since2020/'
+
+# Validaciones
+for d in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
+    files = [f.name for f in dbutils.fs.ls(path + "/Data/" + d) ]
+    vfiles = [f for f in files if 'validacion' in f]
+    print(len(vfiles))
+    
+    for f in tqdm(vfiles):
+        dbutils.fs.cp(path + "/Data/" + d + f, 
+                      path + '/Workspace/Raw/since2020/'+ d + f)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **2. Move from ingestion point (Documents folder)**
+
+# COMMAND ----------
+
+dic_d =  {'ValidacionZonal/'   : "Zonal2023/"   ,
+          'ValidacionZonal/'   : "Zonal2022/"   ,
+          'ValidacionZonal/'   : "Zonal2021/"   ,
+          'ValidacionZonal/'   : "Zonal2020/"   ,
+          'ValidacionTroncal/' : "Troncal2023/" ,
+          'ValidacionTroncal/' : "Troncal2022/" ,
+          'ValidacionTroncal/' : "Troncal2021/" ,
+          'ValidacionTroncal/' : "Troncal2020/" ,
+          'ValidacionDual/'    : "Dual2023/"    ,
+          'ValidacionDual/'    : "Dual2022/"    ,
+          'ValidacionDual/'    : "Dual2021/"    ,
+          'ValidacionDual/'    : "Dual2020/"    }
+
+# COMMAND ----------
+
+for d in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
+   df = dic_d[d]
+   files = [f.name for f in dbutils.fs.ls(path + "/Documents/" + df) ]
+   vfiles = [f for f in files if 'validacion' in f]
+   print(len(vfiles))
+    
+   for f in tqdm(vfiles):
+              dbutils.fs.cp(path + "/Documents/" + df + f, 
+                      path + '/Workspace/Raw/since2020/'+ d + f)
+    
+
+# COMMAND ----------
+
+files
