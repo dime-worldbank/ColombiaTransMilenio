@@ -243,32 +243,48 @@ for d in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
 
 # COMMAND ----------
 
-dic_d =  {'ValidacionZonal/'   : "Zonal2023/"   ,
-          'ValidacionZonal/'   : "Zonal2022/"   ,
-          'ValidacionZonal/'   : "Zonal2021/"   ,
-          'ValidacionZonal/'   : "Zonal2020/"   ,
-          'ValidacionTroncal/' : "Troncal2023/" ,
-          'ValidacionTroncal/' : "Troncal2022/" ,
-          'ValidacionTroncal/' : "Troncal2021/" ,
-          'ValidacionTroncal/' : "Troncal2020/" ,
-          'ValidacionDual/'    : "Dual2023/"    ,
-          'ValidacionDual/'    : "Dual2022/"    ,
-          'ValidacionDual/'    : "Dual2021/"    ,
-          'ValidacionDual/'    : "Dual2020/"    }
+dic_d =  {"Zonal2023/"  : 'ValidacionZonal/'    ,
+          "Zonal2022/"  : 'ValidacionZonal/'    ,
+          "Zonal2021/"  : 'ValidacionZonal/'    ,
+          "Zonal2020/"  : 'ValidacionZonal/'    ,
+          "Troncal2023/": 'ValidacionTroncal/'  ,
+          "Troncal2022/": 'ValidacionTroncal/'  ,
+          "Troncal2021/": 'ValidacionTroncal/'  ,
+          "Troncal2020/": 'ValidacionTroncal/'  ,
+          "Dual2023/"   : 'ValidacionDual/'     ,
+          "Dual2022/"   : 'ValidacionDual/'     ,
+          "Dual2021/"   : 'ValidacionDual/'     ,
+          "Dual2020/"   : 'ValidacionDual/'     }
 
 # COMMAND ----------
 
-for d in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
+for d in [ "Zonal2023/"   ,
+            "Zonal2022/"  ,
+            "Zonal2021/"  ,
+            "Zonal2020/"  ,
+            "Troncal2023/",
+            "Troncal2022/",
+            "Troncal2021/",
+            "Troncal2020/",
+            "Dual2023/"   ,
+            "Dual2022/"   ,
+            "Dual2021/"   ,
+            "Dual2020/"   ]:
    df = dic_d[d]
-   files = [f.name for f in dbutils.fs.ls(path + "/Documents/" + df) ]
+   files = [f.name for f in dbutils.fs.ls(path + "/Documents/" + d) ]
    vfiles = [f for f in files if 'validacion' in f]
    print(len(vfiles))
     
    for f in tqdm(vfiles):
-              dbutils.fs.cp(path + "/Documents/" + df + f, 
-                      path + '/Workspace/Raw/since2020/'+ d + f)
+              dbutils.fs.cp(path + "/Documents/" + d + f, 
+                      path + '/Workspace/Raw/since2020/'+ df + f)
     
 
 # COMMAND ----------
 
-files
+# MAGIC %md
+# MAGIC ## Check number of files in final destination folder
+
+# COMMAND ----------
+
+
