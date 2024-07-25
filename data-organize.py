@@ -220,6 +220,7 @@ os.listdir('/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw
 
 # MAGIC %md
 # MAGIC **1. Move from query point (Data folder)**
+# MAGIC
 
 # COMMAND ----------
 
@@ -284,7 +285,63 @@ for d in [ "Zonal2023/"   ,
 
 # MAGIC %md
 # MAGIC ## Check number of files in final destination folder
+# MAGIC
 
 # COMMAND ----------
 
 
+raw2020_dir = path + '/Workspace/Raw/since2020/'
+
+# Validaciones
+for d in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/']:
+    files = [f.name for f in dbutils.fs.ls(path + "/Data/" + d) ]
+    vfiles = [f for f in files if 'validacion' in f]
+    print(len(vfiles))
+    
+    for f in tqdm(vfiles):
+        dbutils.fs.cp(path + "/Data/" + d + f, 
+                      path + '/Workspace/Raw/since2020/'+ d + f)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **2. Move from ingestion point (Documents folder)**
+
+# COMMAND ----------
+
+dic_d =  {"Zonal2023/"  : 'ValidacionZonal/'    ,
+          "Zonal2022/"  : 'ValidacionZonal/'    ,
+          "Zonal2021/"  : 'ValidacionZonal/'    ,
+          "Zonal2020/"  : 'ValidacionZonal/'    ,
+          "Troncal2023/": 'ValidacionTroncal/'  ,
+          "Troncal2022/": 'ValidacionTroncal/'  ,
+          "Troncal2021/": 'ValidacionTroncal/'  ,
+          "Troncal2020/": 'ValidacionTroncal/'  ,
+          "Dual2023/"   : 'ValidacionDual/'     ,
+          "Dual2022/"   : 'ValidacionDual/'     ,
+          "Dual2021/"   : 'ValidacionDual/'     ,
+          "Dual2020/"   : 'ValidacionDual/'     }
+
+# COMMAND ----------
+
+for d in [ "Zonal2023/"   ,
+            "Zonal2022/"  ,
+            "Zonal2021/"  ,
+            "Zonal2020/"  ,
+            "Troncal2023/",
+            "Troncal2022/",
+            "Troncal2021/",
+            "Troncal2020/",
+            "Dual2023/"   ,
+            "Dual2022/"   ,
+            "Dual2021/"   ,
+            "Dual2020/"   ]:
+   df = dic_d[d]
+   files = [f.name for f in dbutils.fs.ls(path + "/Documents/" + d) ]
+   vfiles = [f for f in files if 'validacion' in f]
+   print(len(vfiles))
+    
+   for f in tqdm(vfiles):
+              dbutils.fs.cp(path + "/Documents/" + d + f, 
+                      path + '/Workspace/Raw/since2020/'+ df + f)
+    
