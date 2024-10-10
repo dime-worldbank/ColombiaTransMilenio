@@ -21,14 +21,35 @@ from pyunpack import Archive
 # COMMAND ----------
 
 # Directories
-path  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
-raw   = path + '/Workspace/Raw/'
-clean = path + '/Workspace/Clean/'
+pathdb  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
+raw   = pathdb + '/Workspace/Raw/'
+clean = pathdb + '/Workspace/Clean/'
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Since 2020
+# MAGIC ## Create parquet files
+
+# COMMAND ----------
+
+# MAGIC %load ./spark_code/install_import_packages.py
+# MAGIC %load ./spark_code/start_spark.py
+# MAGIC
+# MAGIC # utilities
+# MAGIC # generate variables
+
+# COMMAND ----------
+
+# MAGIC %tb 
+
+# COMMAND ----------
+
+spark
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Since 2020
 # MAGIC
 # MAGIC Structure:
 # MAGIC - Datasets by month with all validaciones. The decision to do it by month is that we may continue to update this data, so we can run the process for each new month separately.

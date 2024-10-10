@@ -10,4 +10,7 @@
   - Create a Workspace folder and move data from:
     - Ingestion Point (Documents folder)
     - Downloads Point (Data folder)
+  - _TBC data before 2020_
 #### 3. Clean data: `data-clean`
+- Create parquet files
+ - _TBC data before 2020_
