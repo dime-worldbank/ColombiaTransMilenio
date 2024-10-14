@@ -13,11 +13,18 @@
 !pip install scikit-mobility
 !pip install chart_studio
 !pip install tqdm
+!pip install pyunpack
+!pip install patool
+
 
 ## import_packages.py
+
 ### spark etc
 from tqdm import tqdm
 import rarfile
+from pathlib import Path
+from shutil import rmtree
+from pyunpack import Archive
 import findspark, os, pyspark, time, sys
 import pyspark.sql.functions as F
 from pyspark.sql.functions import pandas_udf, PandasUDFType

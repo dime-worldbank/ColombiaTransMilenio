@@ -13,9 +13,6 @@ print(on_server)
 # Set paths
 if on_server:
     print("OK: ON SERVER")
-    path = '/dbfs/' + pathdb
-    user = os.listdir('/Workspace/Repos')[0]
-    git = f'/Workspace/Repos/{user}/ColombiaTransMilenio'
 else:
     print("Not on server - no path defined")
 
