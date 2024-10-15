@@ -5,42 +5,9 @@
 
 # COMMAND ----------
 
-!pip install tqdm
+
 import sys
 import os
-import csv
-import numpy as np
-import pandas as pd
-from glob import iglob
-from tqdm import tqdm 
-from random import seed
-from itertools import compress
-
-
-# COMMAND ----------
-
-# MAGIC 
-%run ./spark_code/install_import_packages.py
-
-# COMMAND ----------
-
-# MAGIC %run ./aux.py
-
-# COMMAND ----------
-
-sample(10)
-
-# COMMAND ----------
-
-# Try importing py files
-sys.path.append('./spark_code')
-#from ./spark_code/install_import_packages import *
-%run ./spark_code/install_import_packages
-#%run ./spark_code/start_spark
-
-# utilities
-# generate variables
-sample(10)
 
 # COMMAND ----------
 
@@ -48,7 +15,18 @@ sample(10)
 pathdb  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
 path = '/dbfs/' + pathdb
 user = os.listdir('/Workspace/Repos')[0]
-git = f'/Workspace/Repos/{user}/ColombiaTransMilenio'
+git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio'
+
+# COMMAND ----------
+
+# MAGIC  
+sys.path.append("./")
+%run ./spark_code/packages.py
+hola("Running .py works fine :)")
+
+# COMMAND ----------
+
+sample([1,2], 1)
 
 # COMMAND ----------
 

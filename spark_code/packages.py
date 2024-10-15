@@ -17,14 +17,19 @@
 !pip install patool
 
 
+
 ## import_packages.py
 
-### spark etc
+### files
+import csv
+from glob import iglob
 from tqdm import tqdm
 import rarfile
 from pathlib import Path
 from shutil import rmtree
 from pyunpack import Archive
+
+### spark etc
 import findspark, os, pyspark, time, sys
 import pyspark.sql.functions as F
 from pyspark.sql.functions import pandas_udf, PandasUDFType
@@ -40,12 +45,14 @@ from pyspark.sql.types import FloatType
 import multiprocessing
 
 ### data wrangling
+from itertools import compress
+import numpy as np
 import pandas as pd
+
 pd.options.display.float_format = '{:,.0f}'.format
 # pd.set_option("display.max_rows", 100)
 pd.options.display.max_columns = None
 import datetime as dt
-import numpy as np
 from random import sample, seed
 seed(510)
 # timezone = dt.timezone(offset = -dt.timedelta(hours=5), name = "America/Bogota")
@@ -81,7 +88,6 @@ import matplotlib
 from IPython.display import HTML
 import warnings
 warnings.filterwarnings('ignore')
-import os
 from IPython.display import display, HTML
 
 display(HTML(data="""
@@ -91,3 +97,7 @@ display(HTML(data="""
     div#maintoolbar-container { width: 99%; }
 </style>
 """))
+
+
+def hola(x):
+    print(x)
