@@ -5,6 +5,22 @@
 
 # COMMAND ----------
 
+# Pip install non-standard packages
+!pip install rarfile
+!pip install findspark
+!pip install pyspark
+!pip install plotly
+!pip install pyspark_dist_explore
+!pip install geopandas
+!pip install seaborn
+!pip install folium
+!pip install editdistance
+!pip install scikit-mobility
+!pip install chart_studio
+!pip install tqdm
+!pip install pyunpack
+!pip install patool
+
 
 import sys
 import os
@@ -19,14 +35,13 @@ git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio'
 
 # COMMAND ----------
 
-# MAGIC  
-sys.path.append("./")
+# MAGIC 
+%run ./spark_code/hola.py
 %run ./spark_code/packages.py
-hola("Running .py works fine :)")
 
-# COMMAND ----------
+hola("Running hola.py works fine :)")
+working("Running packages.py works fine :)")
 
-sample([1,2], 1)
 
 # COMMAND ----------
 
