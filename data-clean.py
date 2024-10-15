@@ -5,6 +5,45 @@
 
 # COMMAND ----------
 
+!pip install tqdm
+import sys
+import os
+import csv
+import numpy as np
+import pandas as pd
+from glob import iglob
+from tqdm import tqdm 
+from random import seed
+from itertools import compress
+
+
+# COMMAND ----------
+
+# MAGIC 
+%run ./spark_code/install_import_packages.py
+
+# COMMAND ----------
+
+# MAGIC %run ./aux.py
+
+# COMMAND ----------
+
+sample(10)
+
+# COMMAND ----------
+
+# Try importing py files
+sys.path.append('./spark_code')
+#from ./spark_code/install_import_packages import *
+%run ./spark_code/install_import_packages
+#%run ./spark_code/start_spark
+
+# utilities
+# generate variables
+sample(10)
+
+# COMMAND ----------
+
 # Directories
 pathdb  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
 path = '/dbfs/' + pathdb
@@ -13,35 +52,8 @@ git = f'/Workspace/Repos/{user}/ColombiaTransMilenio'
 
 # COMMAND ----------
 
-!pip install tqdm
-import sys
-import os
-import csv
-from glob import iglob
-from tqdm import tqdm 
-
-# COMMAND ----------
-
 # MAGIC %md
-# MAGIC ## Create parquet files
-
-# COMMAND ----------
-
-
-#sys.path.append(os.path.abspath('./spark_code'))
-#%run ./spark_code/install_import_packages
-#%run ./spark_code/start_spark
-
-# utilities
-# generate variables
-
-# COMMAND ----------
-
-# MAGIC %tb 
-
-# COMMAND ----------
-
-spark
+# MAGIC ## (1) Unify structures based on file headers
 
 # COMMAND ----------
 
@@ -54,28 +66,78 @@ spark
 
 # COMMAND ----------
 
-
-file_path = path + '/Workspace/Raw/since2020/ValidacionTroncal/'
-files_dir = os.listdir(file_path)
-print(len(files_dir))
-
-headers = []
-files = []
-for filename in tqdm(files_dir):
-    files.append(filename)
-    try:
-        with open(file_path + filename) as fin:
-            csvin = csv.reader(fin)
-            headers.append(next(csvin, []))
-    except:
-        with open(file_path + filename, encoding = 'latin1') as fin:
-            csvin = csv.reader(fin)
-            headers.append(next(csvin, []))
+# MAGIC %md
+# MAGIC Headers: different types of datasets
 
 # COMMAND ----------
 
-unique_headers = set(tuple(x) for x in headers) # this will make that each time it is run
-print(len(unique_headers))
+headers = []
+files = []
+
+for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
+
+    file_path = path + f'/Workspace/Raw/since2020/{v}/'
+    files_dir = os.listdir(file_path)
+    print(v, len(files_dir))
+
+
+    for filename in tqdm(files_dir):
+        files.append(file_path + filename)
+        try:
+            with open(file_path + filename) as fin:
+                csvin = csv.reader(fin)
+                headers.append(next(csvin, []))
+        except:
+            try:
+                with open(file_path + filename, encoding = 'latin1') as fin:
+                    csvin = csv.reader(fin)
+                    headers.append(next(csvin, []))
+            except:
+                csvin = pd.read_csv(file_path + filename, nrows = 0)
+                headers.append(list(csvin.columns))
+
+# COMMAND ----------
+
+# see how many and which headers we have
+seed(510)
+unique_headers = list(set(tuple(x) for x in headers)) # this will make that each time it is run
+print(f'Unique headers: {len(unique_headers)}')
+for x in range(len(unique_headers)):
+      head = unique_headers[x] 
+      print(f'---------------- Header {x}:')
+      print(sum([h == list(head) for h in headers]), "files")
+      print(head)
+
+# COMMAND ----------
+
+# unique file with no headers: empty data
+print(unique_headers[8])
+filter = [h == list(unique_headers[8]) for h in headers]
+noheaders = list(compress(files, filter)) 
+print(noheaders)
+
+# COMMAND ----------
+
+# Old list of headers by Sebastian for 2016-2017 data
+
+unique_header_list = [['Fecha de Liquidación', 'Fecha de Uso', 'Day Group Type', 'Hora Pico S/N', 'Fase', 'Emisor', 'Operador', 'Línea', 'Estación', 'Acceso de Estación', 'Dispositivo', 'Tipo de Tarjeta', 'Nombre de Perfil', 'Número de Tarjeta', 'Tipo de Tarifa', 'Saldo Previo a Transacción', 'Valor', 'Saldo Después de Transacción'],
+                      ['Fecha de Clearing;Fecha de Transaccion;Hora Pico SN;Fase;Emisor;Operador;Linea;Ruta;Parada;Tipo Vehiculo;ID Vehiculo;Dispositivo;Tipo Tarjeta;Nombre de Perfil;Numero Tarjeta;Tipo de Tarifa;Saldo Previo a Transaccion;Valor;Saldo Despues de Transaccion',],
+                      ['Fecha de Liquidación', 'Fecha de Uso', 'Day Group Type', 'Hora Pico S/N', 'Fase', 'Emisor', 'Operador', 'Línea', 'Ruta', 'Parada', 'Tipo de Vehículo', 'ID de Vehículo', 'Dispositivo', 'Tipo de Tarjeta', 'Nombre de Perfil', 'Número de Tarjeta', 'Tipo de Tarifa', 'Saldo Previo a Transacción', 'Valor', 'Saldo Después de Transacción'],
+                      ['Fecha de Clearing;Fecha de Transaccion;Day Group Type;Hora Pico SN;Fase;Emisor;Operador;Linea;Estacion;Acceso de Estación;Dispositivo;Tipo de Tarjeta;Nombre de Perfil;Numero de Tarjeta;Tipo de Tarifa;Saldo Previo a Transaccion;Valor;Saldo Despues de Transaccion',],
+                      ['Fecha de Clearing;Fecha de Transaccion;Hora Pico SN;Fase;Emisor;Operador;Linea;Ruta;Parada;Tipo Vehiculo;ID Vehiculo;Dispositivo;Tipo Tarjeta;Nombre de Perfil;Numero Tarjeta;Tipo de Tarifa;Saldo Previo a Transaccion;Valor;Saldo Despues de Transaccion;Ruta_Modificada;Linea_Modificada;Cenefa;Parada_Modificada',],
+                      ['Fecha de Clearing', 'Fecha de Transaccion', 'DAY_GROUP_CD', 'Hora Pico SN', 'Fase', 'Emisor', 'Operador', 'Linea', 'Ruta', 'Parada', 'Tipo Vehiculo', 'ID Vehiculo', 'Dispositivo', 'Tipo Tarjeta', 'Nombre de Perfil', 'Numero Tarjeta', 'Tipo de Tarifa', 'Saldo Previo a Transaccion', 'Valor', 'Saldo Despues de Transaccion'],
+                      ['Fecha de Clearing', 'Fecha de Transaccion', 'DAY_GROUP_CD', 'Hora Pico SN', 'Emisor', 'Operador', 'Linea', 'Estacion', 'Acceso de Estación', 'Dispositivo', 'Tipo de Tarjeta', 'Nombre de Perfil', 'Numero de Tarjeta', 'Tipo de Tarifa', 'Saldo Previo a Transaccion', 'Valor', 'Saldo Despues de Transaccion']]
+
+for val in unique_headers: 
+    print(list(val) in unique_header_list)  
+
+# COMMAND ----------
+
+  
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 

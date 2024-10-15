@@ -1,1 +1,4 @@
-import pandas as pd
+from random import sample
+
+def hola(x):
+    print(x)
