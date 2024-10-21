@@ -64,48 +64,32 @@ troncalcoltypes = dict(zip(troncalcols, troncaltypes))
 
 # COMMAND ----------
 
+files = os.listdir(path + f'/Workspace/Raw/since2020/ValidacionTroncal/')
+
+# COMMAND ----------
+
+list(set([l[-12:-4] for l in files]))
+
+# COMMAND ----------
+
 for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
-    file_path = path + f'/Workspace/Raw/since2020/{v}/'
-
-# COMMAND ----------
-
-
-# Data directories
-rawdir           = transmileniodir + "/raw"
-cleandir         = transmileniodir + "/clean"
-
-
-
-
-# COMMAND ----------
-
-years = ["2023"]
-
-for y in years:
-    
-    
+   rawdir    = path + f'/Workspace/Raw/since2020/{v}/'
+   cleandir  = path + '/Workspace/Clean/timing-old-cleaning'
+  
+    dbutils.fs.mkdirs(pathdb + '/Workspace/Clean/timing-old-cleaning/{v}')
+  
     # List of the the raw files to be cleaned
-    os.chdir(rawdir+"/"+y+"data/Troncal"+y)
-    troncalf = os.listdir()
+    os.chdir(rawdir)
+    files = os.listdir()
         
-    os.chdir(rawdir+"/"+y+"data/Zonal"+y)
-    zonalf = os.listdir()
-        
-    os.chdir(rawdir+"/"+y+"data/Dual"+y)
-    dualf = os.listdir()
-    
-    files = troncalf + zonalf + dualf
-    
-    # Remove stata files
-    files = [file for file in files if ".dta" not in file] 
     
     # Remove the files that were already cleaned
-    print("Number of raw files:", len(files))
-    os.chdir(cleandir+"/"+y+"data_clean") 
-    already_cleaned = os.listdir()
-    files = [file for file in files if file.replace('validacion','')[:-4]+"_clean.csv" not in already_cleaned]
-    print("Number of raw files to clean:", len(files))
+   # print("Number of raw files:", len(files))
+   # os.chdir(cleandir+"/"+v) 
+   # already_cleaned = os.listdir()
+   # files = [file for file in files if file.replace('validacion','')[:-4]+"_clean.csv" not in already_cleaned]
+  #  print("Number of raw files to clean:", len(files))
         
     
     # Get the unique days with some data for that year
