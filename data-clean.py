@@ -38,15 +38,19 @@ git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio'
 # MAGIC 
 %run ./spark_code/hola.py
 %run ./spark_code/packages.py
+%run ./spark_code/setup2.py
 
 hola("Running hola.py works fine :)")
 working("Running packages.py works fine :)")
+setup_run("Running setup.py works fine :)")
 
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## (1) Unify structures based on file headers
+# MAGIC
+# MAGIC <mark>With data since 2020 so far</mark>
 
 # COMMAND ----------
 
@@ -185,10 +189,6 @@ print(len(dupfiles), len(set(dupfiles)))
 
 # COMMAND ----------
 
-os.listdir(header_dir)
-
-# COMMAND ----------
-
 # copy each file in each header folder, if not already copied
 
 for folder, files in file_header_dict.items():
@@ -228,12 +228,13 @@ for folder, files in file_header_dict.items():
 
 # COMMAND ----------
 
-
+# MAGIC %md
+# MAGIC ### Importing based on different schemata
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ### Importing based on different schemata
+# import depending on header
+spark_handlers = [spark_df_handler() for _ in range(len(file_header_dict))]
 
 # COMMAND ----------
 
@@ -256,6 +257,10 @@ for idx, handler in enumerate(spark_handlers):
                  delimiter = delimiters[idx], 
                  encoding = encodings[idx])
     display(handler.dfraw.limit(2).toPandas())
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
