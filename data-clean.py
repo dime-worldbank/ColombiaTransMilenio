@@ -33,35 +33,288 @@ path = '/dbfs/' + pathdb
 user = os.listdir('/Workspace/Repos')[0]
 git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio'
 
+## Important sub-directories for this notebook
+byheader_dir = path + '/Workspace/Raw/byheader_dir/'
+
 # COMMAND ----------
 
 # MAGIC 
 %run ./spark_code/hola.py
 %run ./spark_code/packages.py
-%run ./spark_code/setup2.py
+%run ./spark_code/setup.py
+
+## Note that these won't work if there are errors in the code. Make sure first that everything is OK!
 
 hola("Running hola.py works fine :)")
 working("Running packages.py works fine :)")
-setup_run("Running setup.py works fine :)")
+working2("Running setup.py works fine :)")
 
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## (1) Unify structures based on file headers
-# MAGIC
-# MAGIC <mark>With data since 2020 so far</mark>
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Since 2020
+# MAGIC ### Despite setup is supposed to have worked, then I get the error NameError: name 'spark_df_handler' is not defined... So for now I will run setup.py from here
 # MAGIC
 
 # COMMAND ----------
 
+#del(spark_df_handler)
+
+
+## Set up spark
+# Check which computer this is running on
+if multiprocessing.cpu_count() == 6:
+    on_server = False
+else:
+    on_server = True
+
+# start spark session according to computer
+if on_server:
+    spark = SparkSession \
+        .builder \
+        .master("local[75]") \
+        .config("spark.driver.memory", "200g") \
+        .config("spark.sql.session.timeZone", "UTC") \
+        .config('spark.local.dir', '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/') \
+        .config("spark.sql.execution.arrow.enabled", "true")\
+        .getOrCreate()
+else:
+    spark = SparkSession.builder.master("local[*]") \
+    .config("spark.driver.maxResultSize", "2g") \
+    .config("spark.sql.shuffle.partitions", "16") \
+    .config("spark.driver.memory", "8g") \
+    .config("spark.sql.session.timeZone", "UTC") \
+    .config("spark.sql.execution.arrow.enabled", "true")\
+    .getOrCreate()
+
+# Set paths
+if on_server:
+    print("OK: ON SERVER")
+    path = '/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData'
+    user = os.listdir('/Workspace/Repos')[0]
+    git = f'/Workspace/Repos/{user}/Colombia-BRT-IE-temp'
+else:
+    print("Not on server - no path defined")
+
+## Class to handle spark and df in session
+
+class spark_df_handler:
+
+    """Class to collect spark connection and catch the df in memory.
+
+    Attributes
+    ----------
+    spark : an initialised spark connection
+    df : a spark dataframe that holds the raw data
+    on_server : whether
+
+    Methods
+    -------
+    load(path, pickle = True)
+        Loads a pickle or csv
+
+    generate_variables()
+        generates additional variables after raw import
+
+    transform()
+
+    memorize(df)
+        Catch the df in memory
+    """
+
+    def __init__(self,
+                spark = spark,
+                on_server = on_server):
+        self.spark = spark
+        self.on_server = on_server
+
+
+
+
+
+
+    def load(self, path =  path, type = 'parquet', file = 'parquet_df', delimiter = ';', encoding = "utf-8"):
+        if type =='parquet':
+            self.df = spark.read.format("parquet").load(os.path.join(path, file)) # changed
+            
+
+        elif type == 'pickle':
+            name = os.path.join(path, file)
+            pickleRdd = self.spark.sparkContext.pickleFile(name = name).collect()
+            self.df = self.spark.createDataFrame(pickleRdd)
+
+
+                
+        elif type =='new_data':
+            self.dfraw = self.spark.read.format("csv").option("header", "true")\
+                                        .option("delimiter", delimiter)\
+                                        .option("charset", encoding)\
+                                            .load(os.path.join(path,"*")) # reads all files in the path
+
+        else:
+            self.dfraw = self.spark.read.format("csv").option("header", "true")\
+                                        .option("delimiter", ";")\
+                                        .option("charset", "utf-8")\
+                                        .load(path) # changed -- reads all files in the path
+
+        
+
+            #self.clean()
+            #self.gen_vars()
+            
+    def transform(self, header_format):
+        if header_format == 'format_one':
+            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyyMMddHHmmss')\
+                            .alias('transaction_timestamp'),
+                            self.dfraw['Emisor'].alias('emisor'),
+                            self.dfraw['Operador'].alias('operator'),
+                            self.dfraw['Linea'].alias('line'),
+                            self.dfraw['Estacion'].alias('station'),
+                            self.dfraw['Acceso de Estación'].alias('station_access'),
+                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
+                            self.dfraw['Nombre de Perfil'].alias('account_name'),
+                            self.dfraw['Numero de Tarjeta'].cast('long').alias('cardnumber'),
+                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
+                            .alias('balance_before'),
+                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
+                            .alias('balance_after'))
+
+        elif header_format == 'format_two':
+            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Uso'],'dd-MM-yyyy HH:mm:ss')\
+                            .alias('transaction_timestamp'),
+                            self.dfraw['Emisor'].alias('emisor'),
+                            self.dfraw['Operador'].alias('operator'),
+                            self.dfraw['Línea'].alias('line'),
+                            self.dfraw['Estación'].alias('station'),
+                            self.dfraw['Acceso de Estación'].alias('station_access'),
+                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
+                            self.dfraw['Nombre de Perfil'].alias('account_name'),
+                            self.dfraw['Número de Tarjeta'].cast('long').alias('cardnumber'),
+                            F.trim(self.dfraw['Saldo Previo a Transacción']).cast('int')\
+                            .alias('balance_before'),
+                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                            F.trim(self.dfraw['Saldo Después de Transacción']).cast('int')\
+                            .alias('balance_after'))
+            
+        elif header_format == 'format_three':
+            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyy/MM/dd HH:mm:ss')\
+                            .alias('transaction_timestamp'),
+                            self.dfraw['Emisor'].alias('emisor'),
+                            self.dfraw['Operador'].alias('operator'),
+                            self.dfraw['Linea'].alias('line'),
+                            self.dfraw['Parada'].alias('station'),
+                            self.dfraw['Parada'].alias('station_access'),
+                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                            self.dfraw['Tipo Tarjeta'].alias('card_type'),
+                            self.dfraw['Nombre de Perfil'].alias('account_name'),
+                            F.trim(self.dfraw['Numero Tarjeta']).cast('long').alias('cardnumber'),
+                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
+                            .alias('balance_before'),
+                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
+                            .alias('balance_after'))
+            
+        elif header_format == 'format_four':
+            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyyMMddHHmmss')\
+                            .alias('transaction_timestamp'),
+                            self.dfraw['Emisor'].alias('emisor'),
+                            self.dfraw['Operador'].alias('operator'),
+                            self.dfraw['Linea'].alias('line'),
+                            self.dfraw['Parada'].alias('station'),
+                            self.dfraw['Parada'].alias('station_access'),
+                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                            self.dfraw['Tipo Tarjeta'].alias('card_type'),
+                            self.dfraw['Nombre de Perfil'].alias('account_name'),
+                            F.trim(self.dfraw['Numero Tarjeta']).cast('long').alias('cardnumber'),
+                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
+                            .alias('balance_before'),
+                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
+                            .alias('balance_after'))
+            
+        elif header_format == 'format_five':
+            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Uso'],'dd-MM-yyyy HH:mm:ss')\
+                            .alias('transaction_timestamp'),
+                            self.dfraw['Emisor'].alias('emisor'),
+                            self.dfraw['Operador'].alias('operator'),
+                            self.dfraw['Línea'].alias('line'),
+                            self.dfraw['Parada'].alias('station'),
+                            self.dfraw['Parada'].alias('station_access'),
+                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
+                            self.dfraw['Nombre de Perfil'].alias('account_name'),
+                            self.dfraw['Número de Tarjeta'].cast('long').alias('cardnumber'),
+                            F.trim(self.dfraw['Saldo Previo a Transacción']).cast('int')\
+                            .alias('balance_before'),
+                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                            F.trim(self.dfraw['Saldo Después de Transacción']).cast('int')\
+                            .alias('balance_after'))
+            
+            # new formats Wendy  
+
+
+            ## this goes with header_08, header_09, header_10, header_15
+        elif header_format == 'format_6':
+            self.df = self.dfraw.select( 
+                F.to_timestamp( F.regexp_replace(self.dfraw['Fecha_Transaccion'], ' UTC', ''),
+                                'yyyy-MM-dd HH:mm:ss').alias('transaction_timestamp'),
+            self.dfraw['Emisor'].alias('emisor'),
+            self.dfraw['Operador'].alias('operator'),
+            self.dfraw['Linea'].alias('line'),
+            self.dfraw['Estacion_Parada'].alias('station'),
+            self.dfraw['Estacion_Parada'].alias('station_access'),
+            self.dfraw['Dispositivo'].cast('int').alias('machine'),
+            self.dfraw['Tipo_Tarjeta'].alias('card_type'),
+            self.dfraw['Nombre_Perfil'].alias('account_name'),
+            self.dfraw['Numero_Tarjeta'].alias('cardnumber'),
+            F.trim(self.dfraw['Saldo_Previo_a_Transaccion']).cast('int')\
+                .alias('balance_before'),
+            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+            F.trim(self.dfraw['Saldo_Despues_Transaccion']).cast('int')\
+                .alias('balance_after'),
+            self.dfraw['Sistema'].alias('system'))
+            
+            ## this goes with header_11, header_12, header_13, header_14
+        elif header_format == 'format_7':
+                self.df = self.dfraw.select( 
+                    F.to_timestamp( F.regexp_replace(self.dfraw['Fecha_Transaccion'], ' UTC', ''),
+                    'yyyy-MM-dd HH:mm:ss').alias('transaction_timestamp'),
+                self.dfraw['Emisor'].alias('emisor'),
+                self.dfraw['Operador'].alias('operator'),
+                self.dfraw['Linea'].alias('line'),
+                self.dfraw['Estacion_Parada'].alias('station'),
+                self.dfraw['Acceso_Estacion'].alias('station_access'),
+                self.dfraw['Dispositivo'].cast('int').alias('machine'),
+                self.dfraw['Tipo_Tarjeta'].alias('card_type'),
+                self.dfraw['Nombre_Perfil'].alias('account_name'),
+                self.dfraw['Numero_Tarjeta'].alias('cardnumber'),
+                F.trim(self.dfraw['Saldo_Previo_a_Transaccion']).cast('int')\
+                    .alias('balance_before'),
+                F.trim(self.dfraw['Valor']).cast('int').alias('value'),
+                F.trim(self.dfraw['Saldo_Despues_Transaccion']).cast('int')\
+                    .alias('balance_after'),
+                self.dfraw['Sistema'].alias('system'))
+
+    def memorize(self):
+        # Register as table to run SQL queries
+        self.df.createOrReplaceTempView("df_table")
+        self.spark.sql('CACHE TABLE df_table').collect()
+
+        return self.df
+
+# COMMAND ----------
+
 # MAGIC %md
-# MAGIC Headers: different types of datasets
+# MAGIC ## (1) Unify structure 
+# MAGIC <mark> With data since 2020 so far </mark>
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 1.1. Reorganize files by header
 
 # COMMAND ----------
 
@@ -166,7 +419,6 @@ del(headers, files)
 # COMMAND ----------
 
 # Move the files to folders based on their header
-byheader_dir = path + '/Workspace/Raw/byheader_dir/'
 try:
    os.mkdir(byheader_dir)
 except FileExistsError:
@@ -229,34 +481,97 @@ for folder, files in file_header_dict.items():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Importing based on different schemata
+# MAGIC ### 1.2 Importing based on different schemata, check NAs and save
+# MAGIC
+# MAGIC The section below is written so it can be run independently fgrom the section above
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #### 1.2.a. Importing based on different schemata
 
 # COMMAND ----------
 
 # import depending on header
-spark_handlers = [spark_df_handler() for _ in range(len(file_header_dict))]
+header_folders = os.listdir(byheader_dir)
+print(f"We have {len(header_folders)} folders: {header_folders}")
+spark_handlers = [spark_df_handler() for _ in range(len(header_folders))]
 
 # COMMAND ----------
 
-#until now we have 5 headers
+# Link each header to its formats
+headers    =  ['header_one', 'header_two', 'header_three', 'header_four', 'header_five', 'header_six', 'header_seven',
+               'header_08', 'header_09', 'header_10', 'header_11', 'header_12', 'header_13', 'header_14', 'header_15', 'header_16']
+print(f"The following folder should be added to the headers list: {set(header_folders).difference(headers)}. The set SHOULD be empty. ")
 
-spark_handler_one, spark_handler_two, spark_handler_three, spark_handler_four, spark_handler_five = spark_df_handler(), spark_df_handler(), spark_df_handler(), spark_df_handler(), spark_df_handler()
-spark_handlers = [spark_handler_one, spark_handler_two, spark_handler_three, spark_handler_four, spark_handler_five]
+delimiters = [','   , ';'   , ','   , ';'  ,
+              ';'   , ','   ,  ','  , ','  ,
+              ','   , ','   ,  ','  , ','  ,
+              ','   , ','   ,  ','  , ','  ]
+encodings = ["utf-8" ,"utf-8", "utf-8", "utf-8" ,"latin1", "utf-8" ,"utf-8",
+             "utf-8" ,"utf-8", "utf-8" ,"utf-8","utf-8" ,"utf-8","utf-8" ,"utf-8", "utf-8"]
 
+# different headers might have the same or different formats (find the format for headers six and seven, but as for now those folders are missing)
+formats =   ['format_two', 'format_four', 'format_five', 'format_one', 'format_three', '', '',
+             'format_6' , 'format_6' , 'format_6',
+             'format_7' , 'format_7' , 'format_7', 'format_7',
+             'format_6']
 
-delimiters = [','    , ';'   , ','    , ';'     ,';'     ]
-encodings = ["utf-8" ,"utf-8", "utf-8", "utf-8" ,"latin1"]
-dfs = []
-
-from IPython.display import display
+# COMMAND ----------
 
 for idx, handler in enumerate(spark_handlers):
-    print('\n Schema ' + str(idx + 1))
+          
+    if idx < 7: # skip the first 7 headers
+        continue
+    
+    h = headers[idx]
+    print('\n Schema ' + h)
     handler.load(type = 'new_data',
-                 path = os.path.join(pathdb ,"Workspace/Raw/byheader_dir" , header_folder_names[idx]),
+                 path = os.path.join(pathdb ,"Workspace/Raw/byheader_dir/" , h),
                  delimiter = delimiters[idx], 
                  encoding = encodings[idx])
-    display(handler.dfraw.limit(2).toPandas())
+    display(handler.dfraw.limit(1).toPandas())
+
+# COMMAND ----------
+
+for idx, handler in enumerate(spark_handlers):
+    
+    # skip the first 7 headers, use it later to work with full data
+    # skip the 16th header, empty data
+    if (idx < 7) | (idx == 15): 
+        continue
+    
+    h = headers[idx]
+    print('\n Schema ' + h)
+
+    handler.transform(header_format = formats[idx])
+    display(handler.df.limit(1).toPandas())
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #### 1.2.b. Handling NAs
+
+# COMMAND ----------
+
+#Accelerate queries with Delta: This query contains a highly selective filter. To improve the performance of queries, convert the table to Delta and run the OPTIMIZE ZORDER BY command on the table dbfs:/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/byheader_dir/header_08/validacionDual20200229.csv, dbfs:/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/byheader_dir/header_09/validacionDual20220619.csv.
+
+# COMMAND ----------
+
+for idx, handler in enumerate(spark_handlers):
+    if (idx < 7) | (idx == 15): 
+        continue
+
+    h = headers[idx]
+    print('\n Schema ' + h)
+    handler.df.where(handler.df['value'].isNull()).show()
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC - There are some nulls in values, but while other columns are OK. These obs. are OK.
+# MAGIC - We should check what seem to be corrupted files:  Schema header_10
 
 # COMMAND ----------
 
@@ -264,25 +579,44 @@ for idx, handler in enumerate(spark_handlers):
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC #### 1.2.c. Join and save all data
+
+# COMMAND ----------
+
+# Initialize an empty DataFrame
+df = spark_handlers[7].df  # Start with the first DataFrame
+
+for idx, handler in enumerate(spark_handlers):
+    
+    # skip the first 7 headers, use it later to work with full data
+    # skip the 8th which we used to initialize the df
+    # skip the 16th header, empty data
+    if (idx < 8) | (idx == 15): 
+        continue
+
+    # Loop through the rest of the Spark handlers and union their DataFrames
+    df = df.union(spark_handler.df)  
 
 
 # COMMAND ----------
 
-# See files
-[f.name for f in  dbutils.fs.ls(raw + '/since2020')]
-
+os.mkdir(os.path.join(path, 'Workspace/bogota-hdfs'))
 
 # COMMAND ----------
 
-# See files
-files = [f.name for f in  dbutils.fs.ls(raw + '/since2020/ValidacionTroncal/')]
-fdates = [ int(f[-12:-4]) for f in files ]
-print( min(fdates), max(fdates))
+# Create parquet file of raw data
+df.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/parquet_df_raw_new_data'))
+
+# COMMAND ----------
+
+os.listdir(os.path.join(path, 'Workspace/bogota-hdfs/parquet_df_raw_new_data'))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Handling duplicates
 
 # COMMAND ----------
 
 
-
-# COMMAND ----------
-
-files[-1][-12:-4]

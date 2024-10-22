@@ -64,11 +64,67 @@ troncalcoltypes = dict(zip(troncalcols, troncaltypes))
 
 # COMMAND ----------
 
-files = os.listdir(path + f'/Workspace/Raw/since2020/ValidacionTroncal/')
+for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
-# COMMAND ----------
+    print(f"{v} -------------------")
 
-list(set([l[-12:-4] for l in files]))
+    rawdir    = path + f'/Workspace/Raw/since2020/{v}/'
+    cleandir  = path + '/Workspace/Clean/timing-old-cleaning'
+  
+    dbutils.fs.mkdirs(pathdb + '/Workspace/Clean/timing-old-cleaning/{v}')
+  
+    # List of the the raw files to be cleaned
+    os.chdir(rawdir)
+    files = os.listdir()
+    print(f"Files in directory: {len(files)}")
+
+    # Get the unique days with some data for that year
+    days  = list(set([l[-12:-4] for l in files]))
+    first = [x[0] for x in days]
+    print(set(first))
+
+    notdayfiles = [l for l in files if l[-12] != '2']
+    print(notdayfiles)
+    print([l for l in files if 'validacionZonal20220628' in l])
+    print([l for l in files if 'validacionDual20230301' in l])
+
+
+    # remove 
+    files = [l for l in files if (l != 'validacionZonal20220628-WBGXDP0436.csv') & (l != 'validacionDual20230301 (1).csv')]
+    print(f"Files without duplicates: {len(files)}")
+    days  = list(set([l[-12:-4] for l in files]))
+    first = [x[0] for x in days]
+    print(set(first))
+
+
+    # days to int
+    days_int = [int(x) for x in days]
+
+    # since Sept 2023
+    days_int_new = [x for x in days_int if x >= 20230901]
+    days_str_new = [str(x) for x in days_int_new]
+
+    files = [l for l in files if l[-12:-4] in days_str_new]
+    print(f"Files since Aug 2023: {len(files)}")
+
+    if v == 'ValidacionZonal/' :
+        for f in tqdm(files):
+            zonal   = pd.read_csv(f, usecols = zonalcols, dtype  = zonalcoltypes)
+
+            # remove duplicates
+            zonal['fecha']   = zonal.Fecha_Transaccion.str[:19]
+            zonal.drop_duplicates(subset = ['Numero_Tarjeta','fecha'], inplace = True)
+
+            # add typevalid and rename the other columns
+            zonal['typevalid'] = 'zonal'
+            zonal.rename(columns=dict(zip(zonalcols, new_zonalcols)), inplace=True)
+
+                # save clean data to folder
+            os.chdir(cleandir) ########
+            day  = f[-12:-4]
+            zonal.to_csv("Zonal"+day+"_clean.csv", index = False)
+
+
 
 # COMMAND ----------
 
@@ -107,60 +163,3 @@ for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
         # whenever we have a file, import it, clean it and save it to the clean folder
 
-        if t != []:
-            t = t[0]
-
-            os.chdir(rawdir+"/"+y+"data/Troncal"+y)
-            troncal = pd.read_csv(t, usecols = troncalcols, dtype  = troncalcoltypes)
-
-             # remove duplicates
-            troncal['fecha'] = troncal.Fecha_Transaccion.str[:19]
-            troncal.drop_duplicates(subset = ['Numero_Tarjeta','fecha'], inplace = True)
-
-             # add typevalid and rename the other columns
-            troncal['typevalid'] = 'troncal'
-            troncal.rename(columns=dict(zip(troncalcols, new_troncalcols)), inplace=True)
-
-            # save clean data to folder
-            os.chdir(cleandir+"/"+y+"data_clean") 
-            troncal.to_csv("Troncal"+days[day]+"_clean.csv", index = False)
-
-
-
-        if z != []:
-            z = z[0]
-
-            os.chdir(rawdir+"/"+y+"data/Zonal"+y)
-            zonal   = pd.read_csv(z, usecols = zonalcols, dtype  = zonalcoltypes)
-
-            # remove duplicates
-            zonal['fecha']   = zonal.Fecha_Transaccion.str[:19]
-            zonal.drop_duplicates(subset = ['Numero_Tarjeta','fecha'], inplace = True)
-
-            # add typevalid and rename the other columns
-            zonal['typevalid'] = 'zonal'
-            zonal.rename(columns=dict(zip(zonalcols, new_zonalcols)), inplace=True)
-
-             # save clean data to folder
-            os.chdir(cleandir+"/"+y+"data_clean") ########
-            zonal.to_csv("Zonal"+days[day]+"_clean.csv", index = False)
-
-        
-
-        if d != []:
-            d = d[0]
-
-            os.chdir(rawdir+"/"+y+"data/Dual"+y)
-            dual    = pd.read_csv(d, usecols = zonalcols, dtype  = zonalcoltypes) # same cols as zonal
-
-            # remove duplicates
-            dual['fecha']    = dual.Fecha_Transaccion.str[:19]
-            dual.drop_duplicates(subset = ['Numero_Tarjeta','fecha'], inplace = True)  
-
-            # add typevalid and rename the other columns
-            dual['typevalid'] = 'dual'
-            dual.rename(columns=dict(zip(zonalcols, new_zonalcols)), inplace=True)
-
-            # save clean data to folder
-            os.chdir(cleandir+"/"+y+"data_clean") 
-            dual.to_csv("Dual"+days[day]+"_clean.csv", index = False)
