@@ -1,7 +1,7 @@
 
 ## to test if the import worked
 
-def working(x):
+def import_test_packages(x):
     print(x)
 
 
@@ -17,6 +17,8 @@ import rarfile
 from pathlib import Path
 from shutil import rmtree
 from pyunpack import Archive
+import chardet
+import zipfile
 
 ### spark etc
 import findspark, os, pyspark, time, sys
@@ -31,6 +33,7 @@ from pyspark.sql.types import ArrayType
 from pyspark.sql.types import IntegerType
 from pyspark.sql.types import DoubleType
 from pyspark.sql.types import FloatType
+from delta.tables import *
 import multiprocessing
 
 ### data wrangling

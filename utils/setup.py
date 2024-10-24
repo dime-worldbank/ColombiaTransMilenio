@@ -1,5 +1,5 @@
 ## Just a test to see if importing from the main notebook works
-def working2(x):
+def import_test_setup(x):
     print(x)
 
 ## Initiate Spark
@@ -74,11 +74,13 @@ class spark_df_handler:
         self.on_server = on_server
 
 
-
-
-
-
-    def load(self, path =  path, type = 'parquet', file = 'parquet_df', delimiter = ';', encoding = "utf-8"):
+    def load(self, 
+             path =  path, 
+             type = 'parquet', 
+             file = 'parquet_df', 
+             delimiter = ';', 
+             encoding = "utf-8"):
+        
         if type =='parquet':
             self.df = spark.read.format("parquet").load(os.path.join(path, file)) # changed
             

@@ -25,6 +25,7 @@ import shutil
 import sys
 import os
 
+
 # COMMAND ----------
 
 # Directories
@@ -39,16 +40,16 @@ byheader_dir = path + '/Workspace/Raw/byheader_dir/'
 # COMMAND ----------
 
 # MAGIC 
-%run ./spark_code/hola.py
-%run ./spark_code/packages.py
-%run ./spark_code/setup.py
+%run ./utils/import_test.py
+%run ./utils/packages.py
+%run ./utils/setup.py
 
 ## Note that these won't work if there are errors in the code. Make sure first that everything is OK!
 
-hola("Running hola.py works fine :)")
-working("Running packages.py works fine :)")
-working2("Running setup.py works fine :)")
-
+import_test_function("Running hola.py works fine :)")
+import_test_packages("Running packages.py works fine :)")
+import_test_setup("Running setup.py works fine :)")
+dir()
 
 # COMMAND ----------
 
@@ -58,7 +59,9 @@ working2("Running setup.py works fine :)")
 
 # COMMAND ----------
 
-#del(spark_df_handler)
+
+## Initiate Spark
+## Class to handle spark and df in session
 
 
 ## Set up spark
@@ -340,7 +343,7 @@ for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
                     csvin = csv.reader(fin)
                     headers.append(next(csvin, []))
             except:
-                csvin = pd.read_csv(file_path + filename, nrows = 0)
+                csvin = pd.read_csv(file_path + filename, nrows = 0) # this opens zip files as well
                 headers.append(list(csvin.columns))
 
 # COMMAND ----------
@@ -424,12 +427,11 @@ try:
 except FileExistsError:
     print("byheader directory exists")
 
-os.listdir(byheader_dir)
+print(os.listdir(byheader_dir))
 
-# COMMAND ----------
 
 # check we have no duplicate filenames!
-
+# if we had, we need to differentiate files by their Dual versus Troncal versus Zonalorigin
 dupfiles = [item for sublist in list(file_header_dict.values()) for item in sublist]
 
 for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
@@ -438,8 +440,6 @@ for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
 print(len(dupfiles), len(set(dupfiles)))
 
-
-# COMMAND ----------
 
 # copy each file in each header folder, if not already copied
 
@@ -462,6 +462,7 @@ for folder, files in file_header_dict.items():
                 print(f"Copied {file} to {header_dir}")
             
     # This is commented until we work with the full data
+    # ALSO, BEWARE THAT NOW WE ARE REMOVING ZIP FILES: WE SHOULD CHECK FOR FILENAMES NO MATTER IF THEY END WITH .ZIP OR NOT
     # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
     # print(Files to remove:", len(remove))
     # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
@@ -477,6 +478,27 @@ for folder, files in file_header_dict.items():
     f = os.listdir(header_dir)
     print(len(f))
     print(files[:1])
+
+# COMMAND ----------
+
+
+for folder in os.listdir(byheader_dir):
+    all_files = os.listdir(byheader_dir + folder)
+    zip_files = [f for f in all_files if f.endswith('.zip')]
+    print(f"Found {len(zip_files)} zip files out of {len(all_files)} in {folder}")
+
+    if len(zip_files) > 0:
+        for zip_file in tqdm(zip_files):
+
+            zip_file_path = byheader_dir + folder + "/" + zip_file
+
+             # Extract the ZIP file
+            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                zip_ref.extractall(byheader_dir + folder)
+
+            # Delete the ZIP file after extraction
+            os.remove(zip_file_path)
+
 
 # COMMAND ----------
 
@@ -519,6 +541,8 @@ formats =   ['format_two', 'format_four', 'format_five', 'format_one', 'format_t
 
 # COMMAND ----------
 
+# import data
+
 for idx, handler in enumerate(spark_handlers):
           
     if idx < 7: # skip the first 7 headers
@@ -530,9 +554,11 @@ for idx, handler in enumerate(spark_handlers):
                  path = os.path.join(pathdb ,"Workspace/Raw/byheader_dir/" , h),
                  delimiter = delimiters[idx], 
                  encoding = encodings[idx])
-    display(handler.dfraw.limit(1).toPandas())
+    # display(handler.dfraw.limit(1).toPandas())    # display is commented to hide dataset content
 
 # COMMAND ----------
+
+# transform data
 
 for idx, handler in enumerate(spark_handlers):
     
@@ -545,16 +571,12 @@ for idx, handler in enumerate(spark_handlers):
     print('\n Schema ' + h)
 
     handler.transform(header_format = formats[idx])
-    display(handler.df.limit(1).toPandas())
+    # display(handler.df.limit(1).toPandas())    # display is commented to hide dataset content
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC #### 1.2.b. Handling NAs
-
-# COMMAND ----------
-
-#Accelerate queries with Delta: This query contains a highly selective filter. To improve the performance of queries, convert the table to Delta and run the OPTIMIZE ZORDER BY command on the table dbfs:/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/byheader_dir/header_08/validacionDual20200229.csv, dbfs:/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/Raw/byheader_dir/header_09/validacionDual20220619.csv.
 
 # COMMAND ----------
 
@@ -570,12 +592,7 @@ for idx, handler in enumerate(spark_handlers):
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC - There are some nulls in values, but while other columns are OK. These obs. are OK.
-# MAGIC - We should check what seem to be corrupted files:  Schema header_10
-
-# COMMAND ----------
-
-
+# MAGIC - There are some nulls in values, but while other columns are OK. These obs. are OK. The maximum number of rows by schema is 4. So no big issues here.
 
 # COMMAND ----------
 
@@ -602,6 +619,10 @@ for idx, handler in enumerate(spark_handlers):
 # COMMAND ----------
 
 os.mkdir(os.path.join(path, 'Workspace/bogota-hdfs'))
+
+# COMMAND ----------
+
+os.listdir(os.path.join(path, 'Workspace/bogota-hdfs'))
 
 # COMMAND ----------
 
