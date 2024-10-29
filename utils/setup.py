@@ -251,3 +251,6 @@ class spark_df_handler:
         self.spark.sql('CACHE TABLE df_table').collect()
 
         return self.df
+    
+
+
