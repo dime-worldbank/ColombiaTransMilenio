@@ -907,11 +907,14 @@ sh.df.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdf
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## 3.1. Remove super swipers and infrequent users
+
+# COMMAND ----------
+
 # load data
 sh = spark_df_handler()
 sh.load(type = 'parquet', path = pathdb + '/Workspace/bogota-hdfs/', file = 'parquet_df_clean_2020-2024_temp')
-
-# COMMAND ----------
 
 # Correct variables (and save again the dataset with the corrections made)
 sh.df = sh.df.withColumn('year'   , F.year(sh.df['transaction_timestamp']))
@@ -950,46 +953,119 @@ superswipers = superswipers.withColumn("2days_more20swipes",
                            F.when(superswipers["days_more20swipes"] > 1, 1).otherwise(0))
 
 # frequent users (exclude 2024 for now)
-freq = usage_count_day.where( F.col("year") != 2024 ) \
-    .groupBy("cardnumber", "year").agg(
+freq = usage_count_day.groupBy("cardnumber", "year").agg(
             F.countDistinct("day").alias("n_days"),
             F.sum("count").alias("n_valid"))
 
-freq = freq.withColumn("year_more12days",
-                           F.when( freq["n_days"] >= 12, 1).otherwise(0))
-freq = freq.withColumn("year_more12valid",
-                           F.when(  freq["n_valid"] >= 12, 1).otherwise(0))
 
-freq =  freq.groupBy("cardnumber", "year").agg(
+freq = freq.withColumn("year_more12days",
+                           F.when( ((F.col("n_days")  >= 12) & (F.col("year") != 2024)) | \
+                                   ((F.col("n_days")  >= 6 ) & (F.col("year") == 2024)) , 1).otherwise(0))
+freq = freq.withColumn("year_more12valid",
+                           F.when( ((F.col("n_valid")  >= 12) & (F.col("year") != 2024)) | \
+                                   ((F.col("n_valid")  >= 6 ) & (F.col("year") == 2024)) , 1).otherwise(0))
+
+freq =  freq.groupBy("cardnumber").agg(
     F.max("year_more12days").alias("more12days_any_year"),
     F.max("year_more12valid").alias("more12valid_any_year"))
 
 
 # COMMAND ----------
 
-dbutils.fs.mkdirs(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate'))
-
-# Save intermediate
-usage_count_day.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/usage_count_day'))
-superswipers.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/superswipers'))
-freq.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/freq'))
+# Total cards
+superswipers.count()
 
 # COMMAND ----------
 
 # Total cards
-usage_count_day.count()
+freq.count()
+
+# COMMAND ----------
+
+dbutils.fs.mkdirs(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate'))
+
+# Save intermediate
+#usage_count_day.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/usage_count_day'))
+#superswipers.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/superswipers'))
+#freq.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/freq'))
+
+# COMMAND ----------
+
+# maybe save to Pandas (afterwards)
+#superswipers.toPandas().to_csv(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/superswipers.csv'), index = False)
+#freq.toPandas().to_csv(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/freq.csv'), index = False)
+
 
 # COMMAND ----------
 
 # Proportion of superswipers
-superswipers_prop = superswipers.agg(*[F.mean(col).alias(col) for col in ["1day_more100swipes", "2days_more20swipes"]])
-superswipers_prop.show()
+superswipers_perc = superswipers.agg(*[
+    F.round(F.mean(F.col(col)) * 100, 6).alias(col + "_percent")
+    for col in ["1day_more100swipes", "2days_more20swipes"]
+])
+
+superswipers_perc.show()
 
 # COMMAND ----------
 
 # Proportion of unfrequent users
-freq_prop = freq.agg(*[F.mean(col).alias(col) for col in ["more12days_any_year", "more12days_any_year"]])
-freq_prop.show()
+freq_perc = freq.agg(*[
+    F.round(F.mean(F.col(col)) * 100, 5).alias(col + "_percent")
+    for col in ["more12valid_any_year", "more12days_any_year"]
+])
+
+freq_perc.show()
+
+# COMMAND ----------
+
+# Join transactions dataset with superswipers and freq datasets
+df_filtered = df_filtered.join(superswipers, on="cardnumber", how="left")
+df_filtered = df_filtered.join(freq, on="cardnumber", how="left")
+df_filtered.show(2)
+
+# COMMAND ----------
+
+# Proportion of transactions of super swipers and of frequent users
+dummy_columns = ["more12valid_any_year", "more12days_any_year", "1day_more100swipes", "2days_more20swipes"] 
+percentages = df_filtered.agg(*[
+    (F.mean(F.col(col)) * 100).alias(col + "_perc")
+    for col in dummy_columns
+])
+percentages.show()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Out of 14,802,496 cards present from January 2022 to **July 2024**, I am removing:
+# MAGIC - Swiper swipers
+# MAGIC   - more than 100 swipes in a day: 5.34E-4 cards and less than 0.01% transactions.
+# MAGIC   - more than 20 swipes in two days: 2.3E-4 cards and less than 0.01% transactions.
+# MAGIC - Infrequent users
+# MAGIC   - Those at are present for less than 12 _different days_ in 2022 and 2023, and less than 6 days in 2024: 31% of cards, but less than 2% of transactions.
+# MAGIC   - If I were to use the 12 _transactions_ criteria instead: 22% of cards and less than 1% of transactions. But we prefer the days criteria.
+
+# COMMAND ----------
+
+# Remove super swipers and infrequent users form dataset and save
+df_regular_users = df_filtered.filter(
+    (F.col('more12days_any_year') == 1) &
+    (F.col('1day_more100swipes') == 0) &
+    (F.col('2days_more20swipes') == 0)
+) \
+    .select('cardnumber', 'day', 'month', 'year', 'account_name_id', 'value', 'transfer')
+
+# COMMAND ----------
+
+df_filtered.count()
+
+# COMMAND ----------
+
+df_regular_users.cache()
+df_regular_users.count() 
+
+# COMMAND ----------
+
+df_regular_users.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/df_regular-users-2022-2024'))
 
 # COMMAND ----------
 
@@ -1005,52 +1081,67 @@ freq_prop.show()
 
 # COMMAND ----------
 
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
 # MAGIC %md
-# MAGIC # OLD
+# MAGIC ## Identify apoyo or subsidy users
 
 # COMMAND ----------
 
-# Tag transactions with subsidy values
-## Should be apoyo or apoyo ciudadano
+account_name_dict = pd.read_csv(path + '/Workspace/variable_dicts/account_name_dict_dict.csv')
+account_name_dict[["account_name", "account_name_id"]]
 
-## 
-account_name_id_apoyo     = [3, 4]
-account_name_id_anon_pers = [0, 1, 5, 7, 8]
+# COMMAND ----------
 
-
-# The following include all the values in the data
 price_subsidy_18 = [1575, 1725]
 price_subsidy_22 = [1650, 1800] # same since Feb 2019
 price_subsidy_23 = [2250, 2500] # same for 2024, though since Feb tariff unified to 2500
-
 timestamp_threshold = dt.datetime(2022, 1, 31, tzinfo= timezone)  # Adjust timezone as needed
 
-sh_clean.df = sh_clean.df.withColumn(    'sisben_subsidy',
-    F.when(
-        (F.col('account_name_id').isin(3, 4)) & 
-        (
-            (F.col('timestamp') <= timestamp_threshold) & 
-             F.col('value').isin(price_subsidy_18 + price_subsidy_22)
-        ) | 
-        (
-            (F.col('timestamp') > timestamp_threshold) & 
-             F.col('value').isin(price_subsidy_22 + price_subsidy_23)
-        ),
-        1
-    ).otherwise(0)
+# COMMAND ----------
+
+# Analize user's profiles
+df_regular_users = df_regular_users.withColumn("profile-apoyo",   
+                           F.when( F.col('account_name_id').isin([3, 4]), 1).otherwise(0)) \
+                .withColumn("profile-adulto",   
+                           F.when( F.col('account_name_id').isin([0, 5, 7, 8]), 1).otherwise(0)) \
+                .withColumn("profile-anonymous",   
+                           F.when( F.col('account_name_id') == 1, 1).otherwise(0)) \
+                .withColumn("sisben-subsidy-value",
+                            F.when(    ( (F.col('day') <= timestamp_threshold) & (F.col('value').isin(price_subsidy_18 + price_subsidy_22) ) ) |
+                                       ( (F.col('day') > timestamp_threshold)  & (F.col('value').isin(price_subsidy_22 + price_subsidy_23) ) ) \
+                                   , 1).otherwise(0))         
+
+
+# COMMAND ----------
+
+card_types = df_regular_users.groupby("cardnumber").agg(
+    F.max("profile-apoyo").alias("profile-apoyo-any"),
+    F.max("profile-adulto").alias("profile-adulto-any"),
+    F.max("profile-anonymous").alias("profile-anonymous-any"),
+    F.max("sisben-subsidy-value").alias("sisben-subsidy-value-any"),
+    F.mean("profile-apoyo").alias("profile-apoyo-mean"),
+    F.mean("profile-adulto").alias("profile-adulto-mean"),
+    F.mean("profile-anonymous").alias("profile-anonymous-mean"),
+    F.mean("sisben-subsidy-value").alias("sisben-subsidy-value-mean")
 )
+
+# COMMAND ----------
+
+# Calculate the percentage of each type of users
+percentages = card_types.agg(*[
+    F.round(F.mean(F.col(col)) * 100, 2).alias(col + "_percent_1s")
+    for col in ["profile-apoyo-any", "profile-adulto-any", "profile-anonymous-any", "sisben-subsidy-value-any"]
+])
+
+# Show both results
+percentages.show()
+
+
+# Calculate the intersections 
+
+
+# COMMAND ----------
+
+card_types.toPandas().to_csv(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/card_types.csv'), index = False)
 
 # COMMAND ----------
 
