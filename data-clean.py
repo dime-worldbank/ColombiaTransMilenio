@@ -63,7 +63,7 @@ print('ImportTestClass'    in objects_in_dir,
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Things that did not imported OK
+# MAGIC ## Things that did not import
 
 # COMMAND ----------
 
@@ -903,12 +903,14 @@ sh.df.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdf
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC # (3) Prepare sample
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3.1. Remove super swipers and infrequent users
+# MAGIC # (3) Regular Users
+# MAGIC
+# MAGIC Remove super swipers and infrequent users.
+# MAGIC
+# MAGIC <mark> We are doing this for the period of interested: those from January 2022 to July 2024 </mark>
+# MAGIC
+# MAGIC
+# MAGIC _This section can be run independently._
 
 # COMMAND ----------
 
@@ -1082,7 +1084,19 @@ df_regular_users.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Identify apoyo or subsidy users
+# MAGIC ##  3.2. Identify apoyo or subsidy users
+# MAGIC _This section can be run independently._
+
+# COMMAND ----------
+
+# load data
+sh = spark_df_handler()
+sh.load(type = 'parquet', 
+        path = pathdb + '/Workspace/bogota-hdfs/intermediate/', 
+        file = 'df_regular-users-2022-2024')
+
+df_regular_users = sh.df
+df_regular_users.cache()
 
 # COMMAND ----------
 
@@ -1126,63 +1140,193 @@ card_types = df_regular_users.groupby("cardnumber").agg(
 
 # COMMAND ----------
 
-# Calculate the percentage of each type of users
-percentages = card_types.agg(*[
-    F.round(F.mean(F.col(col)) * 100, 2).alias(col + "_percent_1s")
-    for col in ["profile-apoyo-any", "profile-adulto-any", "profile-anonymous-any", "sisben-subsidy-value-any"]
-])
-
-# Show both results
-percentages.show()
-
-
-# Calculate the intersections 
-
+card_types = card_types.toPandas()
 
 # COMMAND ----------
 
-card_types.toPandas().to_csv(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/card_types.csv'), index = False)
+card_types.shape
 
 # COMMAND ----------
 
-
-
-# COMMAND ----------
-
-
-
-# COMMAND ----------
-
-
+# combine categories
+card_types['apoyo-sisben-subsidy-value-any'] = card_types['sisben-subsidy-value-any'] * card_types['profile-apoyo-any']
+card_types['profile-apoyo-adulto-any'] = card_types['profile-adulto-any'] * card_types['profile-apoyo-any']
+card_types['profile-apoyo-anon-any'] = card_types['profile-anonymous-any'] * card_types['profile-apoyo-any']
+card_types['profile-adulto-anon-any'] = card_types['profile-adulto-any'] * card_types['profile-anonymous-any']
 
 # COMMAND ----------
 
-
+print(card_types['profile-apoyo-any'].mean() * 100)
+print(card_types['profile-adulto-any'].mean() * 100)
+print(card_types['profile-anonymous-any'].mean() * 100)
 
 # COMMAND ----------
 
+pd.options.display.float_format = '{:.10f}'.format 
+print(card_types[ card_types['profile-apoyo-any'] == 1, 'profile-apoyo-anon-any'].mean(axis=0)  * 100)
+print(card_types.loc[ card_types['profile-adulto-any'] == 1, 'profile-adulto-anon-any'].mean(axis=0)  * 100)
+print(card_types['profile-apoyo-adulto-any'].sum())
 
+# COMMAND ----------
+
+card_types.to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/card_types.csv'), index = False)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### 2.2. Plot
+# MAGIC These are the stats on profiles, among 10,183,766 regular users in 2022 - july 2024:
+# MAGIC - 7 % of cards are apoyo at some point
+# MAGIC   - 6% are apoyo AND pay Sisbén subsidy values at some point
+# MAGIC - 41% are Adulto cards (personalized) at some point
+# MAGIC - 55% are Anonymous at some point
+# MAGIC As we know, anonymous cards overlap with Adulto or Apoyo. Specifically:
+# MAGIC - Among apoyo, 7% were anonymous at some point
+# MAGIC - Among adulto, 25% were anonymous at some point
+# MAGIC - For some reason there are 4 (four units, not percent) cards were both apoyo and adulto, which shouldn't happen because they need to change the card
 
 # COMMAND ----------
 
-daily_cards = sh_raw.df\
-                .where( (F.col('transaction_timestamp') > dt.datetime(2021, 12, 31, tzinfo = timezone)) &\
-                        (F.col('transaction_timestamp') < dt.datetime(2024, 4, 1,   tzinfo = timezone)) )\
-                .select('cardnumber', 'day')\
+# MAGIC %md
+# MAGIC ## 3.3. Sampling
+# MAGIC _This section can be run independently_
+
+# COMMAND ----------
+
+card_types = pd.read_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/card_types.csv'))
+
+# COMMAND ----------
+
+print(card_types['apoyo-sisben-subsidy-value-any'].sum() * 0.1)
+print(card_types['profile-adulto-any'].sum() * 0.01)
+print(card_types['profile-anonymous-any'].sum() * 0.01)
+
+# COMMAND ----------
+
+card_types.columns
+
+# COMMAND ----------
+
+for profile in ['adulto', 'anonymous']:
+    unique_ids       = list(card_types.cardnumber[card_types[f'profile-{profile}-any']    == 1] )
+    sample_size_full = int(len(unique_ids) / 1000) # 0.1% sample
+ 
+    seed(9)
+    sample_ids = sample(unique_ids, sample_size_full)
+    card_types[f'{profile}_sample'] = card_types.cardnumber.isin(sample_ids) * 1
+
+# COMMAND ----------
+
+unique_ids       = list(card_types.cardnumber[card_types['apoyo-sisben-subsidy-value-any']    == 1] )
+sample_size_full = int(len(unique_ids) / 100) # 1% sample
+ 
+seed(9)
+sample_ids = sample(unique_ids, sample_size_full)
+card_types[f'apoyo_subsidyvalue_sample'] = card_types.cardnumber.isin(sample_ids) * 1
+
+# COMMAND ----------
+
+print(card_types['apoyo_subsidyvalue_sample']sum())
+print(card_types['adulto_sample'].sum())
+print(card_types['anonymous_sample'].sum())
+
+# COMMAND ----------
+
+card_types.to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/card_types_sampleids.csv'), index = False)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3.3. Getting sample transactions
+# MAGIC _This section can be run independently_
+
+# COMMAND ----------
+
+card_types = pd.read_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/card_types_sampleids.csv'))
+card_types = card_types[['cardnumber', 
+           'profile-adulto-any', 'profile-anonymous-any','apoyo-sisben-subsidy-value-any',
+           'adulto_sample', 'anonymous_sample', 'apoyo_subsidyvalue_sample']]
+card_types_spark = spark.createDataFrame(card_types)
+
+# COMMAND ----------
+
+# df_regular_users: a selection of variables, just for regular users, and for 2022 - july 2024
+sh = spark_df_handler()
+sh.load(type = 'parquet', 
+        path = pathdb + '/Workspace/bogota-hdfs/intermediate/', 
+        file = 'df_regular-users-2022-2024')
+
+df_regular_users = sh.df
+df_regular_users.cache()
+
+# Merge with df_regular_users
+df_regular_users  = df_regular_users.join(card_types_spark , on="cardnumber", how="left")
+
+df_regular_users_sample = df_regular_users.filter(
+    (F.col("adulto_sample") == 1) |
+    (F.col("anonymous_sample") == 1) |
+    (F.col("apoyo_subsidyvalue_sample") == 1)
+)
+
+df_regular_users_sample.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/df_regular-users-sample-2022-2024'))
+print(df_regular_users_sample.count())
+
+# COMMAND ----------
+
+# Merge and save from full clean data
+
+# load data
+sh = spark_df_handler()
+sh.load(type = 'parquet', path = pathdb + '/Workspace/bogota-hdfs/', file = 'parquet_df_clean_2020-2024_temp')
+
+df_clean = sh.df
+df_clean.cache()
+
+df_clean  = df_clean.join(card_types_spark , on="cardnumber", how="left")
+
+df_clean_sample = df_clean.filter(
+    (F.col("adulto_sample") == 1) |
+    (F.col("anonymous_sample") == 1) |
+    (F.col("apoyo_subsidyvalue_sample") == 1)
+)
+
+df_clean_sample.write.mode('overwrite').parquet(os.path.join(pathdb, 'Workspace/bogota-hdfs/intermediate/df_clean_sample_2020-2024_temp'))
+print(df_clean_sample.count())
+
+
+# COMMAND ----------
+
+df_clean_sample.toPandas().to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/df_clean_sample_2020-2024_temp.csv'), index = False)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3.4. Plots to compare sample and full data
+
+# COMMAND ----------
+
+daily_cards_sample = df_regular_users_sample.select('cardnumber', 'day')\
                 .distinct()\
                 .groupby('day')\
                 .count()\
                 .toPandas()\
                 .set_index('day')
+daily_cards_sample.to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/daily_cards_regular_users_sample.csv'), index = False)
 
 # COMMAND ----------
 
-daily_cards.sort_values("count").head(20)
+# Full sample
+daily_cards = df_regular_users.select('cardnumber', 'day')\
+                .distinct()\
+                .groupby('day')\
+                .count()\
+                .toPandas()\
+                .set_index('day')
+daily_cards.to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/daily_cards_regular_users.csv'), index = False)
 
 # COMMAND ----------
 
@@ -1192,8 +1336,8 @@ fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (20, 5))
 fig.subplots_adjust(hspace = 0.4)
 
 
-sns.lineplot(x = daily_cards[daily_cards["count"] > 60_000].index , 
-             y = daily_cards[daily_cards["count"] > 60_000].values[:,0]/1_000,
+sns.lineplot(x = daily_cards.index , 
+             y = daily_cards.values[:,0]/1_000,
              color = 'tab:blue')
 #result.to_csv(os.path.join(git,'csv_outputs/report/count_all/active_accounts_per_day_raw.csv'))
 
@@ -1211,6 +1355,9 @@ axes.text(dt.datetime(2023, 2, 1, tzinfo = timezone), ylim, 'Policy change')
 #add_labels(axes)
 axes.set(ylabel = 'Number of active accounts (thousands)', xlabel = 'Day')
 #save_plot('plots/report/count_all/active_accounts_per_day_raw')
+
+
+plt.show()
 
 # COMMAND ----------
 
