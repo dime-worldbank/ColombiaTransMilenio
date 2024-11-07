@@ -492,11 +492,38 @@ for profile in ['adulto', 'anonymous']:
 
 # COMMAND ----------
 
+# add a bigger sampling 
+seed(9)
+unique_ids       = list(card_types.cardnumber[card_types[f'profile_final']    == 'apoyo_subsidyvalue'] )
+sample_size_full = int(len(unique_ids) / 10) # 10% sample
+
+sample_ids       = sample(unique_ids, sample_size_full)
+card_types['insample10'] = card_types.cardnumber.isin(sample_ids) * 1
+
+
+
+for profile in ['adulto', 'anonymous']:
+    unique_ids       = list(card_types.cardnumber[card_types[f'profile_final']    == profile] )
+    sample_size_full = int(len(unique_ids) / 100) # 1% sample
+ 
+    sample_ids = sample(unique_ids, sample_size_full)
+    card_types.loc[card_types.cardnumber.isin(sample_ids),
+                   'insample10'] = 1
+
+
+# COMMAND ----------
+
 card_types.groupby('profile_final')['insample'].sum()
 
 # COMMAND ----------
 
-card_types[["cardnumber","profile_final", "insample"]].to_csv(os.path.join(path, 'Workspace/bogota-hdfs/intermediate/card_types_sampleids.csv'), index = False)
+card_types.groupby('profile_final')['insample10'].sum()
+
+# COMMAND ----------
+
+card_types[["cardnumber","profile_final", "insample", "insample10"]].to_csv(os.path.join(path, 
+                                                                                         'Workspace/bogota-hdfs/intermediate/card_types_sampleids.csv'), 
+                                                                            index = False)
 
 # COMMAND ----------
 
@@ -537,7 +564,7 @@ df_clean = df_clean.join(cards , on="cardnumber", how="left")
 # MAGIC - are regular users (i.e., excluding super swipers and infrequent users)
 # MAGIC - have a relevant profile (adulto, anonymous, or apoyo and paid a subsidy value at some point in the relevant period)
 # MAGIC
-# MAGIC Dataset `df_clean_relevant_sample` takes just the observations selected for the sample.
+# MAGIC Dataset `df_clean_relevant_sample` and `df_clean_relevant_sample10` take just the observations selected for the respective samples.
 
 # COMMAND ----------
 
@@ -551,8 +578,8 @@ print(df_clean.count())
 
 # COMMAND ----------
 
-print(df_clean_sample.count())
 df_clean_sample = df_clean.filter(df_clean.insample == 1)
+print(df_clean_sample.count())
 df_clean_sample.write.mode('overwrite').parquet(os.path.join(pathdb, 
                                                       'Workspace/bogota-hdfs/df_clean_relevant_sample'))
 
@@ -561,6 +588,13 @@ df_clean_sample.write.mode('overwrite').parquet(os.path.join(pathdb,
 df_clean_sample_pd = df_clean_sample.toPandas()
 df_clean_sample_pd.to_csv(os.path.join(path,
                                        'Workspace/Construct/df_clean_relevant_sample.csv'), index = False)
+
+# COMMAND ----------
+
+df_clean_sample10 = df_clean.filter(df_clean.insample10 == 1)
+print(df_clean_sample10.count())
+df_clean_sample10.write.mode('overwrite').parquet(os.path.join(pathdb, 
+                                                      'Workspace/bogota-hdfs/df_clean_relevant_sample10'))
 
 # COMMAND ----------
 

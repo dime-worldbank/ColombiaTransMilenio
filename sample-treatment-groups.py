@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Sample analysis
+# MAGIC # Sample: getting treatment group for each card
 # MAGIC
 # MAGIC In the sample, we have regular users at some point in Jan 2022 - July 2024:
 # MAGIC - 4538 anonymous cards --> this will be excluded from the analysis as in our linked data we do not have purely anonymous cards 
@@ -8,10 +8,16 @@
 # MAGIC   - Who was never eligible and not vulnerable
 # MAGIC   - Who was never eligible and vulnerable 
 # MAGIC   - Who was eligible at some point and signed up
-# MAGIC - 6179 apoyo that paid subsidy at some point in time ---> get a dataset on having the subsidy each month and each period
+# MAGIC - 6179 apoyo that paid subsidy at some point in time [WHICH PERIOD]---> get a dataset on having the subsidy each month and each period
 # MAGIC   - hadlost23: 1, 0, 0
 # MAGIC   - hadlost24: 1, 1, 0
-# MAGIC   - hadlost
+# MAGIC   - hadkept: 1, 1, 1
+# MAGIC   - gained: 0, 0, 1 or 0, 1, 1
+# MAGIC
+# MAGIC Replicating the steps for our linked data (https://github.com/dime-worldbank/Colombia-BRT-IE/blob/development/Fare%20Experiment%202022%20Project/Data%20Analysis/DataWork/Master%20Data/Jupyters/gcloud_linked_data_TM/constr_SurveyImpact-treatment-groups.ipynb) as closely as possible.
+# MAGIC
+# MAGIC
+# MAGIC The most important difference is that this analysis can be only done at the **card** level, and not at the ID level.
 # MAGIC
 # MAGIC
 
@@ -72,10 +78,26 @@ import_test_packages("Running packages.py works fine :)")
 
 # COMMAND ----------
 
+# days with missing data
+days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
+       '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
+       '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
+       '2024-02-08', '2024-02-09', '2024-02-26']
+
+# COMMAND ----------
+
 
 df = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
 df.shape
 
+
+# COMMAND ----------
+
+df.columns
+
+# COMMAND ----------
+
+df.profile_final.unique()
 
 # COMMAND ----------
 
@@ -84,9 +106,7 @@ df.day.max()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Subsidy per card per month
-# MAGIC
-# MAGIC Replicating the steps of https://github.com/dime-worldbank/Colombia-BRT-IE/blob/development/Fare%20Experiment%202022%20Project/Data%20Analysis/DataWork/Master%20Data/Jupyters/gcloud_linked_data_TM/constr_SurveyImpact-treatment-groups.ipynb as close as possible
+# MAGIC ## 1. Get subsidy status per card per month
 # MAGIC
 # MAGIC 1. Keep all data until month when Follow Up 1 survey finished (March 2024)
 # MAGIC
@@ -102,21 +122,13 @@ df.columns
 
 # COMMAND ----------
 
-falldf = df[df.day < '2024-04-01'].reset_index(drop = True)
+falldf = df[(df.day < '2024-04-01')].reset_index(drop = True)
 falldf.day.max()
 
 # COMMAND ----------
 
 # CORRECT  YEAR VARIABLE
 falldf.year = pd.to_datetime(falldf.year).dt.year
-
-# COMMAND ----------
-
-# days with missing data
-days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
-       '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
-       '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
-       '2024-02-08', '2024-02-09', '2024-02-26']
 
 # COMMAND ----------
 
@@ -158,11 +170,11 @@ falldf.loc[(falldf.value.isin(price_full_17 + price_full_18 + price_full_19 +
                  (falldf.day <= "2022-01-31"), "subsidy"] = 0
 
 print(np.sum(falldf.subsidy.isnull()))
-print(np.mean(falldf.subsidy.isnull()) * 100)
 
 # COMMAND ----------
 
 # few weird values
+print(np.mean(falldf.subsidy[falldf.profile_final == "anonymous"].isnull()) * 100)
 falldf.loc[falldf.subsidy.isnull(), ["year", "value", "system", "profile_final"]].drop_duplicates()
 
 # COMMAND ----------
@@ -181,11 +193,60 @@ print(dm.subsidy_month.isnull().sum())
 
 # COMMAND ----------
 
-perc_subsidy =  dm[(dm.month > "2021-12") & (dm.profile_final == "apoyo_subsidyvalue")].groupby(["month",]).agg({"subsidy_month": lambda x: np.mean(x)*100})
-perc_subsidy.subsidy_month.plot(title = "Percentage of Apoyo people with subsidy trips each month")
+dm.to_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'), index=False)
+
+# COMMAND ----------
+
+fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
+fig.subplots_adjust(hspace = 0.4)
+
+perc_subsidy =  dm[(dm.month > "2021-12-01") & (dm.profile_final == "apoyo_subsidyvalue")].groupby(["month",]).agg({"subsidy_month": lambda x: np.mean(x)*100})
+perc_subsidy.subsidy_month.plot(title = "Percentage of cards with subsidy trips over Apoyo* cards each month (2022 - march 2024)")
 plt.xlabel("Month")
 plt.ylabel("%")
-#plt.xticks(np.arange(0, 28, 1))
+plt.figtext(0.5, -0.05, "*Apoyo paying subsidy values anytime on 2022 - july 2024", ha="center", fontsize=8, color="black")
+
 plt.ylim(0, 100)
 plt.grid()
 plt.show()
+
+# COMMAND ----------
+
+subsidy_anymonth = dm[(dm.month > "2021-12-31") & (dm.month < "2024-04-01")].groupby("cardnumber", as_index = False).agg({"subsidy_month" : "max"})
+subsidy_anymonth.columns = ["cardnumber", "subsidy_anymonth"]
+subsidy_anymonth = dm.merge(subsidy_anymonth,
+                            on = "cardnumber",
+                            how = "left")
+fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
+fig.subplots_adjust(hspace = 0.4)
+
+perc_subsidy =  subsidy_anymonth[ (dm.month > "2021-12-31") & (dm.month < "2024-04-01") & (subsidy_anymonth.subsidy_anymonth == 1)].groupby(["month"]).agg({"subsidy_month": lambda x: np.mean(x)*100})
+perc_subsidy.subsidy_month.plot(title =  "NON-LINKED DATA  \n Percentage of CARDS with subsidy trips each month \n over CARDS travelling that month that had the subsidy ANY month Jan22-Mar24")
+plt.xlabel("Month")
+plt.ylabel("%")
+plt.ylim(0, 100)
+plt.grid()
+plt.show()
+
+# COMMAND ----------
+
+subsidy_anymonth = subsidy_anymonth[["cardnumber", "profile_final", "subsidy_anymonth"]].drop_duplicates()
+print(subsidy_anymonth.shape)
+print(subsidy_anymonth.cardnumber.nunique())
+
+pd.crosstab(subsidy_anymonth.profile_final, subsidy_anymonth.subsidy_anymonth)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 2. Having the subsidy each period
+
+# COMMAND ----------
+
+dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'))
+
+# COMMAND ----------
+
+# People present a year before the policy change (Jan 2022 - Jan 2023)
+docsJan22Jan23 = set(dm.cardnumber[(dm.month >= "2022-01")  & (dm.month <= "2023-01")])
+len(docsJan22Jan23)
