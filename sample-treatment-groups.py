@@ -84,24 +84,12 @@ days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
        '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
        '2024-02-08', '2024-02-09', '2024-02-26']
 
-# COMMAND ----------
-
-
 df = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
-df.shape
 
-
-# COMMAND ----------
-
-df.columns
-
-# COMMAND ----------
-
-df.profile_final.unique()
-
-# COMMAND ----------
-
-df.day.max()
+print(df.profile_final.unique())
+print(df.shape)
+print(df.day.max())
+print(df.columns)
 
 # COMMAND ----------
 
@@ -197,6 +185,15 @@ dm.to_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar202
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## Subsidy in any month versus profiles
+
+# COMMAND ----------
+
+dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'))
+
+# COMMAND ----------
+
 fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
 fig.subplots_adjust(hspace = 0.4)
 
@@ -240,6 +237,8 @@ pd.crosstab(subsidy_anymonth.profile_final, subsidy_anymonth.subsidy_anymonth)
 
 # MAGIC %md
 # MAGIC ## 2. Having the subsidy each period
+# MAGIC
+# MAGIC TO DO: clean this code to have better names and be more compact! bydoc is bydocperiod, for instance
 
 # COMMAND ----------
 
@@ -250,3 +249,290 @@ dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020t
 # People present a year before the policy change (Jan 2022 - Jan 2023)
 docsJan22Jan23 = set(dm.cardnumber[(dm.month >= "2022-01")  & (dm.month <= "2023-01")])
 len(docsJan22Jan23)
+dm["Jan22Jan23"] = dm.cardnumber.isin(docsJan22Jan23 )
+
+# COMMAND ----------
+
+# Tag periods
+dm["period"] = np.NaN
+dm.loc[(dm.month >= "2022-01-01")  & (dm.month <= "2023-01-31"), "period"] = 0
+dm.loc[(dm.month >=  "2023-03-01")  & (dm.month <=  "2023-12-31"), "period"] = 1
+dm.loc[(dm.month >=  "2024-01-01")  & (dm.month <=  "2024-03-31"), "period"] = 2
+dm.period.value_counts()
+
+# COMMAND ----------
+
+print("Month not considered for the classification")
+print(np.sum(dm.period.isnull()))
+print(dm.month[dm.period.isnull()].unique())
+
+# COMMAND ----------
+
+print("Cards present a year before the policy change:", 
+      dm.cardnumber[dm.period == 0].nunique())
+print("Cards present March-Dec 2023:", 
+       dm.cardnumber[dm.period == 1].nunique())
+print("Cards present Jan-Mar 2024:", 
+       dm.cardnumber[dm.period == 2].nunique())
+print("Cards present a year before the policy change, not in March-Dec 2023:", 
+       len(set(  dm.cardnumber[dm.period == 0] ).difference(dm.cardnumber[dm.period == 1]) ))
+print("Cards present a year before the policy change, not in Jan-Mar 2024:", 
+       len(set(  dm.cardnumber[dm.period == 0] ).difference(dm.cardnumber[dm.period == 2]) ))
+
+# COMMAND ----------
+
+# dataset with last month in each period 
+last = dm.groupby(["period","cardnumber"], as_index = False).tail(1)
+
+# COMMAND ----------
+
+# Prepare data for corrections
+# % of months 
+check =  dm.groupby(["period","cardnumber"],
+                    as_index = False).agg({"subsidy_month":  ["mean","sum"],
+                                           "month": ["nunique", "min", "max"]})
+check.columns = ["period", "cardnumber",
+                  "mean_m_subsidy", "sum_m_subsidy",
+                  "n_months", "min_month", "max_month"]
+
+check["perc_m_subsidy"] = check.mean_m_subsidy * 100
+
+# dataset by doc and period with all info
+bydoc = last.merge(check,
+                   on = ["period","cardnumber"],
+                   how = "left")
+
+bydoc["subsidy_month_corrected"] = bydoc.subsidy_month
+
+# COMMAND ----------
+
+# 1.  JAN 22- JAN 23: Based on % of months with or without subsidy in the period
+
+bydocbef = bydoc[bydoc.period == 0].reset_index(drop = True)
+
+print("% of months with subsidy for those WITH subsidy in the last month:") 
+print("- People with less than 100%:",
+      np.sum(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 1] < 100),
+      np.mean(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 1] < 100) * 100)
+print("- People with less than 50%:",
+      np.sum(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 1] < 50),
+      np.mean(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 1] < 50) * 100)
+
+print("---")
+print("% of months with subsidy for those WITHOUT subsidy in the last month:") 
+print("- People with any month:",
+      np.sum(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 0] > 0),
+      np.mean(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 0] > 0) * 100)
+print("- People with more than 50%:",
+      np.sum(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 0] > 50),
+      np.mean(bydocbef.perc_m_subsidy[bydocbef.subsidy_month == 0] > 50)* 100)
+
+# COMMAND ----------
+
+# Those without subsidy in the last month before the policy change but more than 50% of months: they will be considered as having the subsidy before the policy change.
+
+bydoc.loc[ (bydoc.period == 0) &
+           (bydoc.perc_m_subsidy > 50) &
+           (bydoc.subsidy_month == 0), 
+          "subsidy_month_corrected" ] = 1
+
+# COMMAND ----------
+
+bydoc = bydoc[['cardnumber', 'period', 
+               'subsidy_month', 'subsidy_month_corrected', 
+               'sum_m_subsidy',  'mean_m_subsidy', 'perc_m_subsidy']]
+
+# COMMAND ----------
+
+pd.crosstab(bydoc.subsidy_month, bydoc.subsidy_month_corrected)
+
+# COMMAND ----------
+
+bydoc.to_csv(os.path.join(path, 'Workspace/Construct/subsidybyperioddoc.csv'), index=False)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Final subsidy group
+
+# COMMAND ----------
+
+bydoc = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybyperioddoc.csv'))
+
+# COMMAND ----------
+
+# add subsidy in each period
+s = bydoc.loc[bydoc.period == 0, ['cardnumber', 'subsidy_month_corrected']]
+s.rename(columns = {"subsidy_month_corrected": "subsidy_t0"}, inplace = True)
+s = s.merge(bydoc.loc[bydoc.period == 1, ['cardnumber', 'subsidy_month_corrected']],
+            how = "left",
+            on = "cardnumber")
+s.rename(columns = {"subsidy_month_corrected": "subsidy_t1"}, inplace = True)
+s = s.merge(bydoc.loc[bydoc.period == 2, ['cardnumber', 'subsidy_month_corrected']],
+            how = "left",
+            on = "cardnumber")
+s.rename(columns = {"subsidy_month_corrected": "subsidy_t2"}, inplace = True)
+
+# COMMAND ----------
+
+#hadlost23
+s['hadlost23'] = (s.subsidy_t0 == 1) & (s.subsidy_t1 == 0) 
+
+#hadlost24
+s['hadlost24'] =  (s.subsidy_t0 == 1) & (s.subsidy_t1 == 1) & (s.subsidy_t2 == 0)
+
+#hadkept
+s['hadkept'] = (s.subsidy_t0 == 1) &  (s.subsidy_t1 == 1) & (s.subsidy_t2 == 1)
+
+# newly
+s['gainedhas'] = (s.subsidy_t0 == 0)  & (s.subsidy_t2 == 1) 
+s.loc[ (s.subsidy_t0.isnull()) &  (s.subsidy_t2 == 1), 'gainedhas'] = True
+s.loc[ (s.subsidy_t0.isnull()) &  (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()), 'gainedhas'] = True
+
+# missings
+s['had_missing'] =  (s.subsidy_t0 == 1)  & (s.subsidy_t1.isnull()) 
+s['had_had_missing'] =  (s.subsidy_t0 == 1)  & (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()) 
+
+
+
+# COMMAND ----------
+
+categ =  ["hadlost23", "hadlost24", "hadkept", "gainedhas", "had_missing", "had_had_missing"]
+s[categ].sum()
+
+# check whether they are mutually exclusive
+s[categ].sum(axis = 1).unique()
+
+# COMMAND ----------
+
+# to dummies instead of booleans and add a categorical variable
+s[categ] = s[categ] * 1
+s["treatment"] = ""
+for v in categ:
+    s.loc[s[v] == 1, "treatment"] = v
+    s.drop(columns = [v], inplace = True)
+s.treatment.value_counts()
+
+# COMMAND ----------
+
+s.columns
+
+# COMMAND ----------
+
+groups = pd.merge(subsidy_anymonth[["cardnumber", "profile_final", "subsidy_anymonth"]],
+                  s,
+                  on = "cardnumber",
+                  how = "left")
+                  
+
+# COMMAND ----------
+
+pd.crosstab(groups.profile_final, groups.treatment)
+
+# COMMAND ----------
+
+pd.crosstab(groups.profile_final, groups.subsidy_anymonth)
+
+# COMMAND ----------
+
+# no treatment for those anonymous
+groups.loc[groups.profile_final == "anonymous", "treatment"] = "anonymous"
+groups.loc[groups.profile_final == "adulto", "treatment"] = "adulto"
+pd.crosstab(groups.profile_final, groups.treatment)
+
+# COMMAND ----------
+
+groups.to_csv(os.path.join(path, 'Workspace/Construct/treatment_groups.csv'), index=False)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Plot monthly validaciones
+
+# COMMAND ----------
+
+groups = pd.read_csv(os.path.join(path, 'Workspace/Construct/treatment_groups.csv'))
+
+# COMMAND ----------
+
+# days with missing data
+days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
+       '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
+       '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
+       '2024-02-08', '2024-02-09', '2024-02-26']
+
+df = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
+
+print(df.profile_final.unique())
+print(df.shape)
+print(df.day.max())
+print(df.columns)
+
+# COMMAND ----------
+
+df = df.merge(groups,
+         on = "cardnumber",
+         how = "left")
+
+
+# COMMAND ----------
+
+df.columns
+
+# COMMAND ----------
+
+# Aggregate by day and profile
+monthly_byt = df[(df.day >= "2022-01-01") & (df.day <= "2024-03-31")].groupby(["month", "treatment"], as_index = False).agg(
+    {"cardnumber" : ["nunique", "count"]} 
+    )  
+monthly_byt.columns = ["month", "treatment", "unique_cards", "total_transactions"]
+monthly_byt[ "transactions_by_card"] = monthly_byt.total_transactions / monthly_byt.unique_cards
+
+# COMMAND ----------
+
+monthly_byt.treatment.unique()
+
+# COMMAND ----------
+
+
+    yvars = ['unique_cards', 'total_transactions', 'transactions_by_card']
+    ylabs = ['unique cards', 'total transactions', 'transactions by card']
+
+
+
+    # Plots
+
+    for y, ylab in zip(yvars, ylabs):
+        fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (20, 5))
+        fig.subplots_adjust(hspace = 0.4)
+
+        for t in [ 'gainedhas', 'hadkept', 'hadlost23', 'hadlost24']:
+            sns.lineplot(x = monthly_byt.month[monthly_byt.treatment == t] , 
+                         y = monthly_byt.loc[monthly_byt.treatment == t, y],
+                         label = t,
+                         alpha = 0.8)
+
+        ymin, ymax = axes.get_ylim()
+        ydiff = (ymax-ymin)
+        ylim = ymax - ydiff * 0.1
+        axes.set_ylim(0, ymax)
+
+
+        axes.axvline(x = "2023-02-01", color ='black')
+        axes.text("2023-02-01", ylim, 'Policy change')
+        xticks = plt.gca().get_xticks()
+
+        plt.xlabel("Month")
+        plt.ylabel(f"{ylab}")
+        plt.title(f"Monthy {ylab} by treatment")
+
+        
+        plt.legend()
+        plt.grid()
+        plt.xticks(xticks[::2]) 
+        plt.show()
+
+
+# COMMAND ----------
+
+# monthly validaciones per card
