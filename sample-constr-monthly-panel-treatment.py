@@ -43,6 +43,7 @@ byheader_dir = path + '/Workspace/Raw/byheader_dir/'
 
 import shutil
 import sys
+from operator import attrgetter
 
 # MAGIC
 %run ./utils/import_test.py
@@ -116,8 +117,6 @@ df = df.merge(dm[ ["cardnumber", "month", "subsidy_month"]],
          how = "left",
          on = ["cardnumber", "month"])
 
-# COMMAND ----------
-
 # add treatment group
 df = df.merge(s[["cardnumber", "profile_final", "treatment", "treatment_v2"]],
               how = "left",
@@ -130,6 +129,7 @@ df = df.merge(s[["cardnumber", "profile_final", "treatment", "treatment_v2"]],
 
 # COMMAND ----------
 
+# Gained has info 
 # Gained has before the policy change
 gainedhas = set(s.cardnumber[s.treatment == "gainedhas"]) 
 aux = df[df.cardnumber.isin(gainedhas)]
@@ -144,7 +144,6 @@ print("Gainedhas in 2022:", gainedhas_2022 , f"- {round(gainedhas_2022 / len(gai
 gainedhas_aft = aux.cardnumber[aux.aft].nunique()
 print("Gainedhas after policy change:", gainedhas_aft , f"- {round(gainedhas_aft / len(gainedhas) * 100)}%" )
 
-# COMMAND ----------
 
 # first month with subsidy after policy change for gainedhas
 gainedhas_s0 = df[(df.treatment == "gainedhas") & (df.subsidy_month == 1) & (df.month >= "2023-01-01") ]
@@ -152,29 +151,25 @@ gainedhas_s0 = gainedhas_s0.groupby("cardnumber", as_index = False).agg({"month"
 gainedhas_s0.rename(columns = {"month": "month_s0"}, inplace = True)
 df  =  df.merge(gainedhas_s0, on = "cardnumber", how = "left")
 
-
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Inconsistencies [TBC; also, do it for V2 or V1?]
+# MAGIC ## Inconsistencies [for V2]
 
 # COMMAND ----------
 
-df["treatment_month"] = df.treatment
+df["treatment_month"] = df.treatment_v2
 
 
-# COMMAND ----------
-
-# Inconsistencies to missing 
-
+## Inconsistencies to missing 
 
 # Gainedhas 
 print("Gainedhas with some subsidy month before policy change:",
-      df.loc[(df.treatment == "gainedhas") & (df.subsidy_month == 1) & (df.month < "2023-02-01") ].cardnumber.nunique())
+      df.loc[(df.treatment_v2 == "gainedhas") & (df.subsidy_month == 1) & (df.month < "2023-02-01") ].cardnumber.nunique())
 
 print("Gainedhas paying full tarif AFTER signup:",
-      df.loc[(df.treatment == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) ].cardnumber.nunique())
-df.loc[(      df.treatment == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) , 
+      df.loc[(df.treatment_v2 == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) ].cardnumber.nunique())
+df.loc[(      df.treatment_v2 == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) , 
        "treatment_month"] = ""
 
 
@@ -193,9 +188,7 @@ df.loc[(      df.treatment == "gainedhas") & (df.subsidy_month == 0) & (df.month
 
 # COMMAND ----------
 
-df = df[['month', 'cardnumber', 'n_validaciones', 'n_trips', 'mean_value_trip', 'treatment', 'treatment_month']]
-
-# COMMAND ----------
+df = df[['month', 'cardnumber', 'n_validaciones', 'n_trips', 'mean_value_trip', 'treatment_v2', 'treatment_month']]
 
 ## Code 0s 
 
@@ -214,9 +207,7 @@ df = df.merge(month0,
          how = "left")
 
 # check that everyone has their first month
-df.month0.isnull().sum()
-
-# COMMAND ----------
+print(df.month0.isnull().sum() == 0 )
 
 # TRIP VARIABLES
 # only code 0s since the first time they show up. Otherwise, code missings.
@@ -226,14 +217,13 @@ df.loc[(df.month < df.month0),
 # check that those present after the policy change have all NaNs in their validaciones before the policy change
 df.n_validaciones[(df.month0 >= "2023-02") & (df.month < "2023-02" )].unique()
 
-# COMMAND ----------
 
 # TREATMENT VARIABLES: 
 # 1. FOWARD FILL OF 0s (they take the value of the last month for each person)
 # 2. BACKWARD FILL OF 0s (for values at the beginning)
 
 # turn 0s to NaN
-df.treatment       = df.treatment.replace(0, np.NaN)
+df.treatment_v2    = df.treatment_v2.replace(0, np.NaN)
 df.treatment_month = df.treatment_month.replace(0, np.NaN)
 
 # super important to sort values
@@ -242,17 +232,12 @@ df = df.sort_values(["cardnumber","month"]).reset_index(drop=True)
 df["treatment_month"] = df.groupby("cardnumber").treatment_month.ffill()
 df["treatment_month"] = df.groupby("cardnumber").treatment_month.bfill()
 
-df["treatment"] = df.groupby("cardnumber").treatment.ffill()
-df["treatment"] = df.groupby("cardnumber").treatment.bfill()
 
-# COMMAND ----------
+df["treatment_v2"] = df.groupby("cardnumber").treatment_v2.ffill()
+df["treatment_v2"] = df.groupby("cardnumber").treatment_v2.bfill()
 
 print("% card-month with inconsistences", sum(df.treatment_month == "") / df.shape[0] * 100)
 print("% card-month with 0 valid", np.mean(df.n_validaciones == 0) * 100 )
-
-# COMMAND ----------
-
-df.drop(columns = ["month0"], inplace = True)
 
 # COMMAND ----------
 
@@ -262,7 +247,7 @@ df.drop(columns = ["month0"], inplace = True)
 # COMMAND ----------
 
 # Aggregate by day and profile
-monthly_byt = df.groupby(["month", "treatment"], as_index = False).agg(
+monthly_byt = df.groupby(["month", "treatment_v2"], as_index = False).agg(
     {"cardnumber" :  "count",
      "n_validaciones": "mean",
      "n_trips": "mean"} 
@@ -278,8 +263,8 @@ monthly_byt = df.groupby(["month", "treatment"], as_index = False).agg(
 yvars = [ 'n_validaciones']
 ylabs = [ 'transactions by card']
 
-tgroup =  [ 'gainedhas', 'hadkept', 'hadlost23']
-tcolors =  ['green', 'blue', 'red', 'orange']
+tgroup =  [ 'gainedhas', 'hadkept_v2', 'hadlost23_v2']
+tcolors =  ['green', '#2986cc', '#cc5199']
 
 # Plots
 for y, ylab in zip(yvars, ylabs):
@@ -287,14 +272,14 @@ for y, ylab in zip(yvars, ylabs):
         fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (12, 5))
         fig.subplots_adjust(hspace = 0.4)
 
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment == t].astype("str") , 
-                    y = monthly_byt.loc[monthly_byt.treatment == t, y],
+        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment_v2 == t].astype("str") , 
+                    y = monthly_byt.loc[monthly_byt.treatment_v2 == t, y],
                     label = t,
                     alpha = 0.8,
                     color = tcolor)
 
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment == 'adulto'].astype("str") , 
-                    y = monthly_byt.loc[monthly_byt.treatment == 'adulto', y],
+        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment_v2 == 'adulto'].astype("str") , 
+                    y = monthly_byt.loc[monthly_byt.treatment_v2 == 'adulto', y],
                     label = 'adulto',
                     alpha = 0.8,
                     color = "gray")
@@ -340,22 +325,32 @@ df["after"] = (df.month >= "2023-03-01") * 1
 df = df.merge(gainedhas_s0, # add first month with the subsidy
               on = "cardnumber",
               how = "left")
-print(df.month_s0[df.treatment == "gainedhas"].isnull().sum()) # should be 0
+print(df.month_s0[df.treatment_v2 == "gainedhas"].isnull().sum()) # should be 0
 
-print(df.month_s0[df.treatment == "gainedhas"].isnull().sum()) # should be 0
+print(df.month_s0[df.treatment_v2 == "gainedhas"].isnull().sum()) # should be 0
 
 # COMMAND ----------
 
 df["after_p"] = df["after"]
-df.loc[(df.treatment == "indata_neverelig") & (df.after == 1) , "after_p"] = 1
-df.loc[(df.treatment == "gainedhas") & (df.month_s0.notnull()) & (df.month < df.month_s0) , "after_p"] = 0
+df.loc[(df.treatment_v2 == "indata_neverelig") & (df.after == 1) , "after_p"] = 1
+df.loc[(df.treatment_v2 == "gainedhas") & (df.month_s0.notnull()) & (df.month < df.month_s0) , "after_p"] = 0
 
 # tab
 pd.crosstab(df.after, df.after_p)
 
 # COMMAND ----------
 
-df.drop(columns = ["month_s0"], inplace = True)
+# add period since treatment. For all groups its since march 23 but for the gained, for whom it is since the first time treated
+df["ymonth"]    = df.month.astype("period[M]")
+df["ymonth_s0"] = df.month_s0.astype("period[M]")
+df.loc[df.treatment_v2 != "gainedhas", "ymonth_s0"] = pd.to_datetime("2023-02").to_period("M")
+
+df["t"] = df.ymonth - df.ymonth_s0 
+df["t"] =  df.t.apply(attrgetter('n'))
+
+# COMMAND ----------
+
+df.drop(columns = ["month", "month_s0", "ymonth_s0"], inplace = True)
 
 # COMMAND ----------
 
