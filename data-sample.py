@@ -706,7 +706,7 @@ for file, titfile in zip (files, titfiles):
 
         axes.axvline(x = "2023-02-01", color ='black')
         axes.text("2023-02-01", ylim, 'Policy change')
-        xticks = plt.gca().get_xticks()
+        
 
         plt.xlabel("Day")
         plt.ylabel(f"{ylab} (thousands)")
