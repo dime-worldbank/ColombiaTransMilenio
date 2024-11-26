@@ -2,6 +2,8 @@
 
 ## Files structure
 
+TBC
+
 ## Code structure
 #### 1. Download newest data: `data-fetch`
   - From TransMilenio GCloud API
@@ -16,7 +18,18 @@
   1. Classify raw data files based on **headers**, and reorganize them in folders by header.
   2. Each header has a specific format. Import them with different spark_handlers to apply the right transformations to each.
 
- - _TBC data before 2020_
+### 4. Sampling: `data-sample`
+
+### 5. Construction: 
+
+1.  `constr-treatment-groups`
+2.  `constr-monthly-panel-treatment`
+
+
+### 6. Analysis:
+- `plot`
+
+### _TBC data before 2020_
 
 
 

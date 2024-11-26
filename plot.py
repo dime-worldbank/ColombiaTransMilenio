@@ -58,6 +58,13 @@ print(cm.cardnumber[cm.treatment_v4 == "adulto"].nunique(),
 
 # COMMAND ----------
 
+
+if samplesize == "_sample10":
+    samplesize_lab = "10"
+
+if samplesize == "_sample1":
+    samplesize_lab = "1"
+
 tsdef = ["treatment_v2", "treatment_v3", "treatment_v4", "treatment_v5"]
 tgroup =  [ 'gainedhas', 'hadkept_v2', 'hadlost23_v2']
 tcolors =  [ 'green', '#2986cc', '#cc5199']
@@ -123,25 +130,25 @@ for ts in tsdef:
         plt.ylabel(f"Validaciones")
         
         if ts == "treatment_v2":
-            plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group")
+            plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group")
 
         if ts == "treatment_v3":
             if t == "gainedhas":
-                plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group \n --- GAINED THAT WERE PRESENT BEFORE ---")
+                plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group \n --- GAINED THAT WERE PRESENT BEFORE ---")
             else:
-                 plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group")
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group")
 
         if ts == "treatment_v4":
             if t == "gainedhas":
-                plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE --- \n --- GAINED THAT WERE PRESENT BEFORE ---")
+                plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE --- \n --- GAINED THAT WERE PRESENT BEFORE ---")
             else:
-                 plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE --- ")
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE --- ")
 
         if ts == "treatment_v5":
             if t == "gainedhas":
-                plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER--- \n --- GAINED THAT WERE PRESENT BEFORE ---")
+                plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER--- \n --- GAINED THAT WERE PRESENT BEFORE ---")
             else:
-                 plt.title(f"WHOLEDATA SAMPLE 1% \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER --- ")
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER --- ")
                     
         plt.legend()
         plt.grid()
