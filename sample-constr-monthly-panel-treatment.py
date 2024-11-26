@@ -62,65 +62,45 @@ import_test_packages("Running packages.py works fine :)")
 
 # COMMAND ----------
 
-alldf = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
-s  = pd.read_csv(os.path.join(path, 'Workspace/Construct/treatment_groups.csv'))
-dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'))
+# PARAMETERS
+
+# choose sample to use
+samplesize = "_sample10"
+#samplesize = "_sample1"
+
 
 days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
        '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
        '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
        '2024-02-08', '2024-02-09', '2024-02-26']
 
+# COMMAND ----------
+
+# Import and merge data
+
+s  = pd.read_csv(os.path.join(path, 'Workspace/Construct/treatment_groups'+samplesize+'.csv'))
+df = pd.read_csv(os.path.join(path,  'Workspace/Construct//monthly-valid-subsidy-bycard'+ samplesize + '.csv'))
+
+s.drop(columns= "profile_final", inplace = True)
+df = df.merge(s,
+         how='left',
+         on = 'cardnumber')
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## By card and month
+df.columns
 
 # COMMAND ----------
 
-falldf = alldf[alldf.month >= "2022-01-01"]
-falldf = falldf[falldf.month <= "2024-03-31"]
-print(falldf.month.min(), falldf.month.max())
-
-# holidays and weekends [TBC]
-# mark if they are trips and NOT transfers
-falldf["full_trip"] = (falldf.value > 500) * 1
+print(df.month.min(), df.month.max())
 
 
-# for all validaciones
-df1 = falldf.groupby(["month", "cardnumber"],
-                   as_index = False).agg({'transaction_timestamp': 'count'})
-df1.rename(columns = {'transaction_timestamp' : 'n_validaciones'}, inplace = True)
+# COMMAND ----------
 
+# save a copy of all periods
+df_all = df
 
-# for full trips (removing transfers)
-df2 = falldf[falldf.full_trip == 1].reset_index(drop = True)
-df2 = df2.groupby(["month", "cardnumber"],
-                  as_index = False).agg({'transaction_timestamp': 'count',
-                                         'value': 'mean'})
-
-df2.rename(columns = {'transaction_timestamp' : 'n_trips',
-                      'value': 'mean_value_trip'}, inplace = True)
-
-# merge
-df = df1.merge(df2,
-          how = "left",
-          on  = ["month", "cardnumber"])
-del df1, df2
-
-# fill na for trips with 0s
-df = df.fillna(0)
-
-# add subsidy status
-df = df.merge(dm[ ["cardnumber", "month", "subsidy_month"]],
-         how = "left",
-         on = ["cardnumber", "month"])
-
-# add treatment group
-df = df.merge(s[["cardnumber", "profile_final", "treatment", "treatment_v2"]],
-              how = "left",
-              on = "cardnumber")
+df = df[df.month >= "2022-01-01"].reset_index(drop = True)
 
 # COMMAND ----------
 
@@ -134,9 +114,6 @@ df = df.merge(s[["cardnumber", "profile_final", "treatment", "treatment_v2"]],
 gainedhas = set(s.cardnumber[s.treatment == "gainedhas"]) 
 aux = df[df.cardnumber.isin(gainedhas)]
 aux["aft"] = aux.month >= "2023-02"
-
-gainedhas_bef = aux.cardnumber[~aux.aft].nunique()
-print("Gainedhas before policy change:", gainedhas_bef , f"- {round(gainedhas_bef / len(gainedhas) * 100)}%" )
 
 gainedhas_2022 = aux.cardnumber[(aux.month < "2023-02") & (aux.month >= "2022-01") ].nunique()
 print("Gainedhas in 2022:", gainedhas_2022 , f"- {round(gainedhas_2022 / len(gainedhas) * 100)}%" )
@@ -194,7 +171,7 @@ df = df[['month', 'cardnumber', 'n_validaciones', 'n_trips', 'mean_value_trip', 
 
 # First month in the data for everyone
 # SINCE 2021
-month0 = alldf[alldf.month >= "2021-01-01"].groupby("cardnumber", as_index = False).agg({"month": min})
+month0 = df_all[df_all.month >= "2021-01-01"].groupby("cardnumber", as_index = False).agg({"month": min})
 month0.rename(columns = {"month": "month0"}, inplace = True)
 
 # fill with 0s when there are no obs for that doc-month
@@ -242,76 +219,9 @@ print("% card-month with 0 valid", np.mean(df.n_validaciones == 0) * 100 )
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Plot
-
-# COMMAND ----------
-
-# Aggregate by day and profile
-monthly_byt = df.groupby(["month", "treatment_v2"], as_index = False).agg(
-    {"cardnumber" :  "count",
-     "n_validaciones": "mean",
-     "n_trips": "mean"} 
-    )  
-
-# COMMAND ----------
-
-
-#yvars = ['unique_cards', 'total_transactions', 'transactions_by_card']
-#ylabs = ['unique cards', 'total transactions', 'transactions by card']
-# for y, ylab in zip(yvars, ylabs):
-
-yvars = [ 'n_validaciones']
-ylabs = [ 'transactions by card']
-
-tgroup =  [ 'gainedhas', 'hadkept_v2', 'hadlost23_v2']
-tcolors =  ['green', '#2986cc', '#cc5199']
-
-# Plots
-for y, ylab in zip(yvars, ylabs):
-    for t, tcolor in zip (tgroup, tcolors):
-        fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (12, 5))
-        fig.subplots_adjust(hspace = 0.4)
-
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment_v2 == t].astype("str") , 
-                    y = monthly_byt.loc[monthly_byt.treatment_v2 == t, y],
-                    label = t,
-                    alpha = 0.8,
-                    color = tcolor)
-
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment_v2 == 'adulto'].astype("str") , 
-                    y = monthly_byt.loc[monthly_byt.treatment_v2 == 'adulto', y],
-                    label = 'adulto',
-                    alpha = 0.8,
-                    color = "gray")
-
-
-        ymin, ymax = axes.get_ylim()
-        ydiff = (ymax-ymin)
-        ylim = ymax - ydiff * 0.1
-        axes.set_ylim(0, ymax)
-
-
-        axes.axvline(x = "2023-02-01", color ='black')
-        axes.text("2023-02-01", ylim, 'Policy change')
-        xticks = plt.gca().get_xticks()
-
-        plt.xlabel("Month")
-        plt.ylabel(f"{ylab}")
-        plt.title(f"WHOLEDATA SAMPLE (1% apoyo) - Monthy {ylab} by treatment (CODING 0s)")
-
-        
-        plt.legend()
-        plt.grid()
-        plt.xticks(xticks[::3]) 
-        plt.show()
-
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ##  After variable
 # MAGIC
-# MAGIC - [TBC] variable t: months before or after treatment
+# MAGIC - variable t: months before or after treatment
 # MAGIC - gainedhas people are treated since they signed up, the after variable for them is 1 since they first sign up
 
 # COMMAND ----------
@@ -319,7 +229,7 @@ for y, ylab in zip(yvars, ylabs):
 # AFTER
 
 # after policy change
-df["after"] = (df.month >= "2023-03-01") * 1
+df["after"] = (df.month >= "2023-02-01") * 1
 
 # after by person (varies for the gained has)
 df = df.merge(gainedhas_s0, # add first month with the subsidy
@@ -354,21 +264,28 @@ df.drop(columns = ["month", "month_s0", "ymonth_s0"], inplace = True)
 
 # COMMAND ----------
 
+df = df.merge(s[["cardnumber", "cards_t0", "cards_after"]],
+         on= "cardnumber",
+         how= "left")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Save
 
 # COMMAND ----------
 
-df.to_csv(os.path.join(path, 'Workspace/Construct/panel_with_treatment.csv'), index = False)
+df.to_csv(f'{path}Workspace/Construct/panel_with_treatment{samplesize}.csv', index = False)
 
 # COMMAND ----------
 
-dbutils.fs.cp(os.path.join(pathdb, 'Workspace/Construct/panel_with_treatment.csv'), "/FileStore/my-stuff/panel_with_treatment.csv")
-#Download from: https://adb-6102124407836814.14.azuredatabricks.net/files/my-stuff/panel_with_treatment.csv
+dbutils.fs.cp(f'{pathdb}/Workspace/Construct/panel_with_treatment{samplesize}.csv', f"/FileStore/my-stuff/panel_with_treatment{samplesize}.csv")
+#Download from: https://adb-6102124407836814.14.azuredatabricks.net/files/my-stuff/panel_with_treatment_sample10.csv
+#Download from: https://adb-6102124407836814.14.azuredatabricks.net/files/my-stuff/panel_with_treatment_sample1.csv
 
 # COMMAND ----------
 
-dbutils.fs.rm("/FileStore/my-stuff/panel_with_treatment.csv")
+dbutils.fs.rm(f"/FileStore/my-stuff/panel_with_treatment{samplesize}.csv")
 
 # COMMAND ----------
 

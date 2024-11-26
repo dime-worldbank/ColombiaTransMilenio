@@ -40,6 +40,12 @@ byheader_dir = path + '/Workspace/Raw/byheader_dir/'
 
 # COMMAND ----------
 
+# choose sample to use
+#samplesize = "_sample10"
+samplesize = "_sample1"
+
+# COMMAND ----------
+
 # Pip install non-standard packages
 !pip install rarfile
 !pip install findspark
@@ -76,18 +82,35 @@ import_test_packages("Running packages.py works fine :)")
 
 # COMMAND ----------
 
+
 # days with missing data
 days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
        '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
        '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
        '2024-02-08', '2024-02-09', '2024-02-26']
 
-df = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
 
-print(df.profile_final.unique())
-print(df.shape)
-print(df.day.max())
-print(df.columns)
+# The following include all the values in the data
+price_subsidy_18 = [1575, 1725]
+price_subsidy_22 = [1650, 1800] # same since Feb 2019
+price_subsidy_23 = [2250, 2500] # same for 2024, though since Feb tariff unified to 2500
+
+price_full_17    = [2000] 
+price_full_18    = [2100, 2300] 
+price_full_19    = [2200, 2400] 
+price_full_20    = [2300, 2500] # careful as 2500 is repeated in the subsidy values for 2022
+price_full_22    = [2450, 2650]
+price_full_23    = [2750, 2950] # same for 2024, though since Feb tariff unified to 2950
+
+# COMMAND ----------
+
+os.listdir(os.path.join(path,f'Workspace/bogota-hdfs/'))
+
+# COMMAND ----------
+
+df = spark.read.format("parquet").load(os.path.join(pathdb,f'Workspace/bogota-hdfs/df_clean_relevant{samplesize}'))
+df.cache()
+
 
 # COMMAND ----------
 
@@ -104,71 +127,96 @@ print(df.columns)
 
 # COMMAND ----------
 
-df.columns
+# Filter dates
+falldf = df.filter(F.col("day") < "2024-04-01")
+
+# Correct the year variable
+falldf = falldf.withColumn("year", F.year(F.col("year").cast("timestamp")))
+
+# Filter out rows with value <= 200
+falldf = falldf.filter(F.col("value") > 200)
+
+falldf = falldf.withColumn(
+    "subsidy",
+    F.when( # After 2022
+        (F.col("value").isin(price_subsidy_22 + price_subsidy_23)) &
+        (F.col("day") > "2022-01-31"), 1
+    ).when( # After 2022
+        (F.col("value").isin(price_full_22 + price_full_23)) &
+        (F.col("day") > "2022-01-31"), 0
+    ).when( # Before 2022
+        (F.col("value").isin(price_subsidy_18 + price_subsidy_22)) &
+        (F.col("day") <= "2022-01-31"), 1
+    ).when( # Before 2022
+        (F.col("value").isin(price_full_17 + price_full_18 + price_full_19 +
+                            price_full_20 + price_full_22)) &
+        (F.col("day") <= "2022-01-31"), 0
+    )
+)
+
+# mark if they are trips and NOT transfers
+falldf = falldf.withColumn("full_trip", (F.col("value") > 500).cast("int"))
+falldf = falldf.withColumn(
+    "value_full_trip", 
+    F.when(F.col("full_trip") == 0, None).otherwise(F.col("value"))
+)
+# to count all validaciones
+falldf = falldf.withColumn("constant_one", F.lit(1))
 
 # COMMAND ----------
 
-falldf = df[(df.day < '2024-04-01')].reset_index(drop = True)
-falldf.day.max()
+# Stats [NOT RUNNING BECAUSE IT TAKES LONG]
+# Get the maximum day
+max_day = falldf.agg(F.max("day")).collect()[0][0]
+print(f"Max day: {max_day}")
 
-# COMMAND ----------
-
-# CORRECT  YEAR VARIABLE
-falldf.year = pd.to_datetime(falldf.year).dt.year
-
-# COMMAND ----------
-
-print("Cards in sample:", falldf.cardnumber.nunique())
-print("Total validaciones:", falldf.shape[0])
-falldf = falldf[falldf.value > 200].reset_index(drop = True)
-print("Total validaciones without transfers:", falldf.shape[0])
-print("Cards in sample:", falldf.cardnumber.nunique())
-
-# COMMAND ----------
-
-# The following include all the values in the data
-price_subsidy_18 = [1575, 1725]
-price_subsidy_22 = [1650, 1800] # same since Feb 2019
-price_subsidy_23 = [2250, 2500] # same for 2024, though since Feb tariff unified to 2500
-
-price_full_17    = [2000] 
-price_full_18    = [2100, 2300] 
-price_full_19    = [2200, 2400] 
-price_full_20    = [2300, 2500] # careful as 2500 is repeated in the subsidy values for 2022
-price_full_22    = [2450, 2650]
-price_full_23    = [2750, 2950] # same for 2024, though since Feb tariff unified to 2950
-
-# do it separately before and after 2022 because 2500 is repeated for subsidy in 2023 and full in 2020
-
-## after 2022
-falldf["subsidy"] = np.NaN
-falldf.loc[(falldf.value.isin( price_subsidy_22 + price_subsidy_23) ) & # here we have subsidy 2023
-           (falldf.day > "2022-01-31"), "subsidy"] = 1
-falldf.loc[(falldf.value.isin( price_full_22    + price_full_23)    ) &
-           (falldf.day > "2022-01-31"), "subsidy"] = 0
+# Cards in sample
+num_cards = alldf.select("cardnumber").distinct().count()
+print(f"Cards in sample: {num_cards}")
 
 
-## before 2022
-falldf.loc[(falldf.value.isin(price_subsidy_18 + price_subsidy_22) ) &
-           (falldf.day <= "2022-01-31"), "subsidy"] = 1
-falldf.loc[(falldf.value.isin(price_full_17 + price_full_18 + price_full_19 +
-                              price_full_20 + price_full_22)    ) & # and here full 2020
-                 (falldf.day <= "2022-01-31"), "subsidy"] = 0
+# Cards in sample after filter
+num_cards_after = falldf.select("cardnumber").distinct().count()
+print(f"Cards in sample after filter: {num_cards_after}")
 
-print(np.sum(falldf.subsidy.isnull()))
+# Total validations
+total_validations = falldf.count()
+print(f"Total validations: {total_validations}")
 
-# COMMAND ----------
 
-# few weird values
-print(np.mean(falldf.subsidy[falldf.profile_final == "anonymous"].isnull()) * 100)
-falldf.loc[falldf.subsidy.isnull(), ["year", "value", "system", "profile_final"]].drop_duplicates()
+# Count null subsidy values
+num_null_subsidy = falldf.filter(F.col("subsidy").isNull()).count()
+print(f"Number of null subsidy values: {num_null_subsidy}")
+
+
+# Calculate percentage of null subsidies for anonymous profiles
+anonymous_null_percentage = falldf.filter(F.col("profile_final") == "anonymous") \
+                                   .filter(F.col("subsidy").isNull()) \
+                                   .count() / falldf.filter(F.col("profile_final") == "anonymous").count() * 100
+print(f"Percentage of null subsidies for anonymous profiles: {anonymous_null_percentage:.2f}%")
+
+# Show rows with null subsidy values and drop duplicates
+falldf.filter(F.col("subsidy").isNull()) \
+      .select("year", "value", "system", "profile_final") \
+      .distinct() \
+      .show()
 
 # COMMAND ----------
 
 # Get number and % of subsidy trips each month
-dm = falldf.groupby(['cardnumber', 'profile_final',
-                     'month'], as_index = False).agg({"subsidy": ["mean", "sum"]}).reset_index(drop = True)
-dm.columns =  ['cardnumber','profile_final', 'month', 'subsidy_mean', 'subsidy_sum']
+# get total validaciones, total full trips and avg value of full trips by month
+
+dm = falldf.groupBy("cardnumber", "profile_final", "month") \
+.agg(
+    F.mean("subsidy").alias("subsidy_mean"),
+    F.sum("subsidy").alias("subsidy_sum"),
+    F.sum("constant_one").alias("n_validaciones"),
+    F.sum("full_trip").alias("n_trips"),
+    F.mean("value_full_trip").alias("mean_value_trip")
+)
+dm = dm.toPandas()
+
+# COMMAND ----------
 
 # subsidy that month rule
 dm["subsidy_month"] = 0
@@ -179,7 +227,11 @@ print(dm.subsidy_month.isnull().sum())
 
 # COMMAND ----------
 
-dm.to_csv(os.path.join(path, 'Workspace/Construct/subsidybmonthdoc-2020toMar2024_sample.csv'), index=False)
+dm.shape
+
+# COMMAND ----------
+
+dm.to_csv(os.path.join(path, 'Workspace/Construct//monthly-valid-subsidy-bycard'+ samplesize + '.csv'), index=False)
 
 # COMMAND ----------
 
@@ -187,25 +239,6 @@ dm.to_csv(os.path.join(path, 'Workspace/Construct/subsidybmonthdoc-2020toMar2024
 # MAGIC ## Subsidy per card per month: plots & stats
 # MAGIC - Plots of cards with subsidy per month.
 # MAGIC - Having subsidy in any month versus card profile profiles
-
-# COMMAND ----------
-
-dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'))
-
-# COMMAND ----------
-
-fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
-fig.subplots_adjust(hspace = 0.4)
-
-perc_subsidy =  dm[(dm.month > "2021-12-01") & (dm.profile_final == "apoyo_subsidyvalue")].groupby(["month",]).agg({"subsidy_month": lambda x: np.mean(x)*100})
-perc_subsidy.subsidy_month.plot(title = "Percentage of cards with subsidy trips over Apoyo* cards each month (2022 - march 2024)")
-plt.xlabel("Month")
-plt.ylabel("%")
-plt.figtext(0.5, -0.05, "*Apoyo paying subsidy values anytime on 2022 - july 2024", ha="center", fontsize=8, color="black")
-
-plt.ylim(0, 100)
-plt.grid()
-plt.show()
 
 # COMMAND ----------
 
@@ -218,7 +251,7 @@ fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
 fig.subplots_adjust(hspace = 0.4)
 
 perc_subsidy =  subsidy_anymonth[ (dm.month > "2021-12-31") & (dm.month < "2024-04-01") & (subsidy_anymonth.subsidy_anymonth == 1)].groupby(["month"]).agg({"subsidy_month": lambda x: np.mean(x)*100})
-perc_subsidy.subsidy_month.plot(title =  "NON-LINKED DATA  \n Percentage of CARDS with subsidy trips each month \n over CARDS travelling that month that had the subsidy ANY month Jan22-Mar24")
+perc_subsidy.subsidy_month.plot(title = f"NON-LINKED DATA  \n Percentage of CARDS with subsidy trips each month \n over CARDS travelling that month that had the subsidy ANY month Jan22-Mar24 \n {samplesize}")
 plt.xlabel("Month")
 plt.ylabel("%")
 plt.ylim(0, 100)
@@ -242,7 +275,7 @@ pd.crosstab(subsidy_anymonth.profile_final, subsidy_anymonth.subsidy_anymonth)
 
 # COMMAND ----------
 
-dm = pd.read_csv(os.path.join(path, 'Workspace/Construct/subsidybymonthdoc-2020toMar2024_sample.csv'))
+dm = pd.read_csv(os.path.join(path, 'Workspace/Construct//monthly-valid-subsidy-bycard'+ samplesize + '.csv'))
 
 # Tag periods
 dm["period"] = np.NaN
@@ -339,7 +372,7 @@ by_card_period = by_card_period[['cardnumber', 'period',
                                                 'sum_m_subsidy',  'mean_m_subsidy', 'perc_m_subsidy']] 
 
 
-pd.crosstab(by_card_period.subsidy_month,by_card_period.subsidy_month_corrected)   
+pd.crosstab(by_card_period.subsidy_month, by_card_period.subsidy_month_corrected)   
 
 # COMMAND ----------
 
@@ -459,146 +492,10 @@ pd.crosstab(s.treatment, s.treatment_v2)
 
 # COMMAND ----------
 
-s.to_csv(os.path.join(path, 'Workspace/Construct/treatment_groups.csv'), index=False)
+# Was there before policy change or after
+s["cards_t0"]    = s.subsidy_t0.notnull()
+s["cards_after"] = (s.subsidy_t1.notnull()) | (s.subsidy_t2.notnull())
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## 3. Plot monthly validaciones (without coding 0s)
-
-# COMMAND ----------
-
-# Import data
-df = pd.read_csv(os.path.join(path, 'Workspace/Construct/df_clean_relevant_sample.csv'))
-groups = pd.read_csv(os.path.join(path, 'Workspace/Construct/treatment_groups.csv'))
-df = df.merge(groups,
-         on = "cardnumber",
-         how = "left")
-
-# Aggregate by day and profile
-monthly_byt = df[(df.day >= "2022-01-01") & (df.day <= "2024-03-31")].groupby(["month", "treatment"], as_index = False).agg(
-    {"cardnumber" : ["nunique", "count"]} 
-    )  
-monthly_byt.columns = ["month", "treatment", "unique_cards", "total_transactions"]
-monthly_byt[ "transactions_by_card"] = monthly_byt.total_transactions / monthly_byt.unique_cards
-
-
-## treatment v2
-monthly_byt_v2 = df[(df.day >= "2022-01-01") & (df.day <= "2024-03-31")].groupby(["month", "treatment_v2"], as_index = False).agg(
-    {"cardnumber" : ["nunique", "count"]} 
-    )  
-monthly_byt_v2.columns = ["month", "treatment", "unique_cards", "total_transactions"]
-monthly_byt_v2[ "transactions_by_card"] = monthly_byt_v2.total_transactions / monthly_byt_v2.unique_cards  
-
-# COMMAND ----------
-
-
-
-yvars = [ 'transactions_by_card']
-ylabs = [ 'transactions by card']
-
-tgroup =  [ 'gainedhas', 'hadkept', 'hadlost23']
-tcolors =  ['green', 'blue', 'red']
-
-# Plots
-
-tot_adulto_cards = s.cardnumber[s.treatment == 'adulto'].nunique()
-
-for y, ylab in zip(yvars, ylabs):
-    for t, tcolor in zip (tgroup, tcolors):
-        fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (12, 5))
-        fig.subplots_adjust(hspace = 0.4)
-
-        tot_t_cards = s.cardnumber[s.treatment == t].nunique()
-
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment == t] , 
-                    y = monthly_byt.loc[monthly_byt.treatment == t, y],
-                    label = t + " - total cards: " + str(tot_t_cards)  ,
-                    alpha = 0.8,
-                    color = tcolor)
-
-        sns.lineplot(x = monthly_byt.month[monthly_byt.treatment == 'adulto'] , 
-                    y = monthly_byt.loc[monthly_byt.treatment == 'adulto', y],
-                    label = f'adulto - total cards: {tot_adulto_cards}',
-                    alpha = 0.8,
-                    color = "gray")
-
-
-        ymin, ymax = axes.get_ylim()
-        ydiff = (ymax-ymin)
-        ylim = ymax - ydiff * 0.1
-        axes.set_ylim(0, ymax)
-
-
-        axes.axvline(x = "2023-02-01", color ='black')
-        axes.text("2023-02-01", ylim, 'Policy change')
-        xticks = plt.gca().get_xticks()
-
-        plt.xlabel("Month")
-        plt.ylabel(f"{ylab}")
-        plt.title(f"WHOLEDATA SAMPLE (1% apoyo) - Monthy {ylab} by treatment")
-
-        
-        plt.legend()
-        plt.grid()
-        plt.xticks(xticks[::3]) 
-        plt.show()
-
-
-# COMMAND ----------
-
-
-#yvars = ['unique_cards', 'total_transactions', 'transactions_by_card']
-#ylabs = ['unique cards', 'total transactions', 'transactions by card']
-# for y, ylab in zip(yvars, ylabs):
-
-yvars = [ 'transactions_by_card']
-ylabs = [ 'transactions by card']
-
-tgroup =  [  'hadkept_v2', 'hadlost23_v2']
-tcolors =  [ '#2986cc', '#cc5199']
-
-# Plots
-
-tot_adulto_cards = s.cardnumber[s.treatment_v2 == 'adulto'].nunique()
-
-for y, ylab in zip(yvars, ylabs):
-    for t, tcolor in zip (tgroup, tcolors):
-        fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (12, 5))
-        fig.subplots_adjust(hspace = 0.4)
-
-        tot_t_cards = s.cardnumber[s.treatment_v2 == t].nunique()
-
-        sns.lineplot(x = monthly_byt_v2.month[monthly_byt_v2.treatment == t] , 
-                    y = monthly_byt_v2.loc[monthly_byt_v2.treatment == t, y],
-                    label = t + " - total cards: " + str(tot_t_cards)  ,
-                    alpha = 0.8,
-                    color = tcolor)
-
-        sns.lineplot(x = monthly_byt_v2.month[monthly_byt_v2.treatment == 'adulto'] , 
-                    y = monthly_byt_v2.loc[monthly_byt_v2.treatment == 'adulto', y],
-                    label = f'adulto - total cards: {tot_adulto_cards}',
-                    alpha = 0.8,
-                    color = "gray")
-
-
-        ymin, ymax = axes.get_ylim()
-        ydiff = (ymax-ymin)
-        ylim = ymax - ydiff * 0.1
-        axes.set_ylim(0, ymax)
-
-
-        axes.axvline(x = "2023-02-01", color ='black')
-        axes.text("2023-02-01", ylim, 'Policy change')
-        xticks = plt.gca().get_xticks()
-
-        plt.xlabel("Month")
-        plt.ylabel(f"{ylab}")
-        plt.title(f"WHOLEDATA SAMPLE (1% apoyo) - Monthy {ylab} by treatment")
-
-        
-        plt.legend()
-        plt.grid()
-        plt.xticks(xticks[::3]) 
-        plt.show()
-
+s.to_csv(os.path.join(path, 'Workspace/Construct/treatment_groups'+samplesize+'.csv'), index=False)

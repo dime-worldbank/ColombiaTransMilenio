@@ -603,7 +603,10 @@ df_clean_sample10.write.mode('overwrite').parquet(os.path.join(pathdb,
 
 # COMMAND ----------
 
-df = spark.read.format("parquet").load(pathdb + '/Workspace/bogota-hdfs/df_clean_relevant')
+# to run with biggher sample
+samplesize = "_sample10"
+
+df = spark.read.format("parquet").load(pathdb + '/Workspace/bogota-hdfs/df_clean_relevant' + samplesize)
 df.cache()
 
 # Aggregate by day and profile
@@ -615,34 +618,9 @@ daily_byprofile = daily_byprofile.withColumn(
     "transactions_by_card", 
     F.col("total_transactions") / F.col("unique_cards")
     )
-
-
-# COMMAND ----------
 
 daily_byprofile_pd = daily_byprofile.toPandas()
-
-# COMMAND ----------
-
-daily_byprofile_pd.to_csv(os.path.join(path, 'Workspace/Construct/daily_byprofile.csv'), index = False)
-
-# COMMAND ----------
-
-# sample data
-df = spark.read.format("parquet").load(pathdb + '/Workspace/bogota-hdfs/df_clean_relevant_sample')
-df.cache()
-
-# Aggregate by day and profile
-daily_byprofile = df.groupBy("day", "profile_final").agg(
-    F.countDistinct("cardnumber").alias("unique_cards"), 
-    F.count("*").alias("total_transactions")     
-    )  
-daily_byprofile = daily_byprofile.withColumn(
-    "transactions_by_card", 
-    F.col("total_transactions") / F.col("unique_cards")
-    )
-
-daily_byprofile_sample_pd = daily_byprofile.toPandas()
-daily_byprofile_sample_pd.to_csv(os.path.join(path, 'Workspace/Construct/daily_byprofile_sample.csv'), index = False)
+daily_byprofile_pd.to_csv(os.path.join(path, 'Workspace/Construct/daily_byprofile'+ samplesize +'.csv'), index = False)
 
 # COMMAND ----------
 
@@ -652,16 +630,12 @@ daily_byprofile_sample_pd.to_csv(os.path.join(path, 'Workspace/Construct/daily_b
 # COMMAND ----------
 
 # Get days with missing data:
-daily_byprofile = pd.read_csv(os.path.join(path, f'Workspace/Construct/daily_byprofile.csv'))
+daily_byprofile = pd.read_csv(os.path.join(path, f'Workspace/Construct/daily_byprofile'+ samplesize +'.csv'))
 daily_byprofile = daily_byprofile.sort_values("day")
 daily_byprofile = daily_byprofile[daily_byprofile.day >= "2020-01-01"]
 daily_byprofile = daily_byprofile[daily_byprofile.day < "2024-10-01"]
 daily_cards = daily_byprofile.groupby("day")["unique_cards"].sum()
 days_missing = np.unique(list(daily_cards.index[daily_cards < 30000]) + ["2022-09-16", "2022-09-17", "2022-09-18", "2022-09-19", "2022-09-20"])
-days_missing
-
-# COMMAND ----------
-
 days_missing = ['2022-09-16', '2022-09-17', '2022-09-18', '2022-09-19',
        '2022-09-20', '2023-10-29', '2023-11-26', '2023-12-03',
        '2023-12-24', '2023-12-25', '2024-02-03', '2024-02-06',
@@ -670,8 +644,8 @@ print(len(days_missing))
 
 # COMMAND ----------
 
-files = ["daily_byprofile.csv", "daily_byprofile_sample.csv"]
-titfiles = ["WHOLEDATA", "SAMPLE"]
+files = ["daily_byprofile.csv", "daily_byprofile_sample.csv", "daily_byprofile_sample10.csv"]
+titfiles = ["WHOLEDATA", "SAMPLE 1% apoyo", "SAMPLE 10% apoyo"]
 
 for file, titfile in zip (files, titfiles):
     daily_byprofile = pd.read_csv(os.path.join(path, f'Workspace/Construct/{file}'))
@@ -715,6 +689,7 @@ for file, titfile in zip (files, titfiles):
         plt.figtext(0.5, -0.05, "*Profiles defined based on 2022 - july 2024 data. Adulto or apoyo_subsidyvalue if anytime Adulto or Apoyo paying subsidy values. Anonymous if always anonymous.", ha="center", fontsize=8, color="black")
 
         plt.legend()
+        xticks = plt.gca().get_xticks()
         plt.xticks(xticks[::180]) 
         plt.show()
 
