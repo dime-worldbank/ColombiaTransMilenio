@@ -38,26 +38,6 @@ cm.loc[cm.n_trips == 0, "n_trips_no0s"] = np.nan
 
 # COMMAND ----------
 
-# gainedhas that were there before
-cm["treatment_v3"] = cm.treatment_v2
-cm.loc[(cm.treatment_v2 == "gainedhas") & (cm.cards_t0 == False), "treatment_v3"] = ""
-print(cm.cardnumber[cm.treatment_v2 == "gainedhas"].nunique(),
-      cm.cardnumber[cm.treatment_v3 == "gainedhas"].nunique())
-
-# adulto that were there before
-cm["treatment_v4"] = cm.treatment_v3
-cm.loc[(cm.treatment_v3 == "adulto") & (cm.cards_t0 == False), "treatment_v4"] = ""
-print(cm.cardnumber[cm.treatment_v3 == "adulto"].nunique(),
-      cm.cardnumber[cm.treatment_v4 == "adulto"].nunique())
-
-# adulto that were there before & after
-cm["treatment_v5"] = cm.treatment_v4
-cm.loc[(cm.treatment_v4 == "adulto") & (cm.cards_after == False), "treatment_v5"] = ""
-print(cm.cardnumber[cm.treatment_v4 == "adulto"].nunique(),
-      cm.cardnumber[cm.treatment_v5 == "adulto"].nunique())
-
-# COMMAND ----------
-
 
 if samplesize == "_sample10":
     samplesize_lab = "10"
@@ -65,8 +45,9 @@ if samplesize == "_sample10":
 if samplesize == "_sample1":
     samplesize_lab = "1"
 
-tsdef = ["treatment_v2", "treatment_v3", "treatment_v4", "treatment_v5"]
-tgroup =  [ 'gainedhas', 'hadkept_v2', 'hadlost23_v2']
+tsdef = ["treatment" ]
+
+tgroup =  [ 'gainedhas', 'hadkept', 'hadlost23']
 tcolors =  [ 'green', '#2986cc', '#cc5199']
 
 for ts in tsdef:
@@ -149,9 +130,94 @@ for ts in tsdef:
                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER--- \n --- GAINED THAT WERE PRESENT BEFORE ---")
             else:
                  plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER --- ")
+
+        if ts == "treatment_v5":
+            if t == "gainedhas":
+                plt.title(f"LINKED DATA \n Monthy validaciones by treatment group \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER--- \n --- GAINED THAT WERE PRESENT BEFORE ---")
+            else:
+                 plt.title(f"LINKED DATA \n Monthy validaciones by treatment group  \n --- ADULTO THAT WERE PRESENT BEFORE & AFTER --- ")
                     
+        
+        if ts == "treatment_ba_v2":
+            if t == "gainedhas":
+                plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group \n --- ADULTO PRESENT BEFORE & AFTER--- \n --- GAINED PRESENT AFTER ---")
+            else:
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group  \n --- CARDS PRESENT BEFORE & AFTER --- ")
+                    
+        if ts == "treatment_ba":
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% \n Monthy validaciones by treatment group  \n --- CARDS PRESENT BEFORE & AFTER --- ")
+
         plt.legend()
         plt.grid()
         plt.xticks(xticks[::2]) 
+        plt.show()
+
+
+# COMMAND ----------
+
+
+if samplesize == "_sample10":
+    samplesize_lab = "10"
+
+if samplesize == "_sample1":
+    samplesize_lab = "1"
+
+tsdef = ["treatment" ]  # cards present before and after
+tgroup =  [ 'gainedhas', 'hadkept', 'hadlost23']
+tcolors =  [ 'green', '#2986cc', '#cc5199']
+
+for ts in tsdef:
+
+    tot_adulto_cards = cm.cardnumber[cm[ts] == 'adulto'].nunique()
+
+        # Aggregate by day and profile
+    monthly = cm.groupby(["ymonth", ts], as_index = False).agg(
+        {"cardnumber" :  "count",
+        "n_validaciones": "mean",
+        "n_trips": "mean",
+        "n_validaciones_no0s": "mean",
+        "n_trips_no0s": "mean"} 
+        )  
+
+    for t, tcolor in zip (tgroup, tcolors):
+        fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (12, 5))
+        fig.subplots_adjust(hspace = 0.4)
+
+        tot_t_cards = cm.cardnumber[cm[ts] == t].nunique()
+
+
+        sns.lineplot(x = monthly.ymonth[monthly[ts] == t] , 
+                     y = monthly.loc   [monthly[ts] == t, "n_trips"],
+                     label = f"{t} - total cards: {str(tot_t_cards)} "   ,
+                     alpha = 0.8,
+                     color = tcolor,
+                     linestyle="dashed")
+
+
+        sns.lineplot(x = monthly.ymonth[monthly[ts] == 'adulto'] , 
+                     y = monthly.loc   [monthly[ts] == 'adulto',  "n_trips"],
+                     label = f'adulto - total cards: {tot_adulto_cards} ',
+                     alpha = 0.8,
+                     color = "gray",
+                    linestyle="dashed")
+
+        axes.set_ylim(0, 40)
+
+
+        axes.axvline(x = "2023-02", color ='black')
+        axes.text("2023-02", 3, 'Policy change')
+        xticks = plt.gca().get_xticks()
+
+        plt.xlabel("Month")
+        plt.ylabel(f"Validaciones")
+        
+     
+                    
+        if ts == "treatment_ba":
+                 plt.title(f"WHOLEDATA SAMPLE {samplesize_lab}% - Monthy trips by treatment group  -coding 0s ")
+
+        plt.legend()
+        plt.grid()
+        plt.xticks(xticks[::4]) 
         plt.show()
 

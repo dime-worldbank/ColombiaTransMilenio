@@ -11,9 +11,13 @@ from tqdm import tqdm
 
 # COMMAND ----------
 
-DATA_DIR = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data'
+DATA_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/Data'
 os.makedirs(DATA_DIR, exist_ok=True) # Creates the given directory if it does not exist
 dbutils.fs.mkdirs(DATA_DIR) # Creates the given directory if it does not exist
+
+# COMMAND ----------
+
+dbutils.fs.ls('/Volumes/prd_csc_mega/sColom15/vColom15')
 
 # COMMAND ----------
 
@@ -57,16 +61,7 @@ for blob in tqdm(blobs):
 
 # COMMAND ----------
 
-# Check that files are uploaded to dbfs
-dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/')
-
-# COMMAND ----------
-
-# MAGIC %sh du -h /dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data
-
-# COMMAND ----------
-
-dbutils.fs.ls('/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Data/ValidacionZonal')
+# MAGIC %sh du -h /Volumes/prd_csc_mega/sColom15/vColom15/Data
 
 # COMMAND ----------
 

@@ -131,22 +131,22 @@ df  =  df.merge(gainedhas_s0, on = "cardnumber", how = "left")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Inconsistencies [for V2]
+# MAGIC ## Inconsistencies 
 
 # COMMAND ----------
 
-df["treatment_month"] = df.treatment_v2
+df["treatment_month"] = df.treatment
 
 
 ## Inconsistencies to missing 
 
 # Gainedhas 
 print("Gainedhas with some subsidy month before policy change:",
-      df.loc[(df.treatment_v2 == "gainedhas") & (df.subsidy_month == 1) & (df.month < "2023-02-01") ].cardnumber.nunique())
+      df.loc[(df.treatment == "gainedhas") & (df.subsidy_month == 1) & (df.month < "2023-02-01") ].cardnumber.nunique())
 
 print("Gainedhas paying full tarif AFTER signup:",
-      df.loc[(df.treatment_v2 == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) ].cardnumber.nunique())
-df.loc[(      df.treatment_v2 == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) , 
+      df.loc[(df.treatment == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) ].cardnumber.nunique())
+df.loc[(      df.treatment == "gainedhas") & (df.subsidy_month == 0) & (df.month > df.month_s0) , 
        "treatment_month"] = ""
 
 
@@ -165,7 +165,7 @@ df.loc[(      df.treatment_v2 == "gainedhas") & (df.subsidy_month == 0) & (df.mo
 
 # COMMAND ----------
 
-df = df[['month', 'cardnumber', 'n_validaciones', 'n_trips', 'mean_value_trip', 'treatment_v2', 'treatment_month']]
+df = df[['month', 'cardnumber', 'n_validaciones', 'n_trips', 'mean_value_trip', 'treatment', 'treatment_month']]
 
 ## Code 0s 
 
@@ -200,7 +200,7 @@ df.n_validaciones[(df.month0 >= "2023-02") & (df.month < "2023-02" )].unique()
 # 2. BACKWARD FILL OF 0s (for values at the beginning)
 
 # turn 0s to NaN
-df.treatment_v2    = df.treatment_v2.replace(0, np.NaN)
+df.treatment       = df.treatment.replace(0, np.NaN)
 df.treatment_month = df.treatment_month.replace(0, np.NaN)
 
 # super important to sort values
@@ -210,8 +210,8 @@ df["treatment_month"] = df.groupby("cardnumber").treatment_month.ffill()
 df["treatment_month"] = df.groupby("cardnumber").treatment_month.bfill()
 
 
-df["treatment_v2"] = df.groupby("cardnumber").treatment_v2.ffill()
-df["treatment_v2"] = df.groupby("cardnumber").treatment_v2.bfill()
+df["treatment"] = df.groupby("cardnumber").treatment.ffill()
+df["treatment"] = df.groupby("cardnumber").treatment.bfill()
 
 print("% card-month with inconsistences", sum(df.treatment_month == "") / df.shape[0] * 100)
 print("% card-month with 0 valid", np.mean(df.n_validaciones == 0) * 100 )
@@ -235,15 +235,15 @@ df["after"] = (df.month >= "2023-02-01") * 1
 df = df.merge(gainedhas_s0, # add first month with the subsidy
               on = "cardnumber",
               how = "left")
-print(df.month_s0[df.treatment_v2 == "gainedhas"].isnull().sum()) # should be 0
+print(df.month_s0[df.treatment == "gainedhas"].isnull().sum()) # should be 0
 
-print(df.month_s0[df.treatment_v2 == "gainedhas"].isnull().sum()) # should be 0
+print(df.month_s0[df.treatment == "gainedhas"].isnull().sum()) # should be 0
 
 # COMMAND ----------
 
 df["after_p"] = df["after"]
-df.loc[(df.treatment_v2 == "indata_neverelig") & (df.after == 1) , "after_p"] = 1
-df.loc[(df.treatment_v2 == "gainedhas") & (df.month_s0.notnull()) & (df.month < df.month_s0) , "after_p"] = 0
+df.loc[(df.treatment == "indata_neverelig") & (df.after == 1) , "after_p"] = 1
+df.loc[(df.treatment == "gainedhas") & (df.month_s0.notnull()) & (df.month < df.month_s0) , "after_p"] = 0
 
 # tab
 pd.crosstab(df.after, df.after_p)
@@ -253,7 +253,7 @@ pd.crosstab(df.after, df.after_p)
 # add period since treatment. For all groups its since march 23 but for the gained, for whom it is since the first time treated
 df["ymonth"]    = df.month.astype("period[M]")
 df["ymonth_s0"] = df.month_s0.astype("period[M]")
-df.loc[df.treatment_v2 != "gainedhas", "ymonth_s0"] = pd.to_datetime("2023-02").to_period("M")
+df.loc[df.treatment != "gainedhas", "ymonth_s0"] = pd.to_datetime("2023-02").to_period("M")
 
 df["t"] = df.ymonth - df.ymonth_s0 
 df["t"] =  df.t.apply(attrgetter('n'))
@@ -264,7 +264,7 @@ df.drop(columns = ["month", "month_s0", "ymonth_s0"], inplace = True)
 
 # COMMAND ----------
 
-df = df.merge(s[["cardnumber", "cards_t0", "cards_after"]],
+df = df.merge(s[["cardnumber", "cards_t0", "cards_t1", "cards_t2"]],
          on= "cardnumber",
          how= "left")
 

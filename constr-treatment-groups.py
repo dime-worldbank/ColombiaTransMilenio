@@ -41,8 +41,8 @@ byheader_dir = path + '/Workspace/Raw/byheader_dir/'
 # COMMAND ----------
 
 # choose sample to use
-#samplesize = "_sample10"
-samplesize = "_sample1"
+samplesize = "_sample10"
+#samplesize = "_sample1"
 
 # COMMAND ----------
 
@@ -102,6 +102,11 @@ price_full_20    = [2300, 2500] # careful as 2500 is repeated in the subsidy val
 price_full_22    = [2450, 2650]
 price_full_23    = [2750, 2950] # same for 2024, though since Feb tariff unified to 2950
 
+
+# COMMAND ----------
+
+os.listdir('/dbfs/mnt/DAP')
+
 # COMMAND ----------
 
 os.listdir(os.path.join(path,f'Workspace/bogota-hdfs/'))
@@ -128,7 +133,7 @@ df.cache()
 # COMMAND ----------
 
 # Filter dates
-falldf = df.filter(F.col("day") < "2024-04-01")
+falldf = df.filter(F.col("day") < "2024-10-01") # LAST MONTH AVAILABLE
 
 # Correct the year variable
 falldf = falldf.withColumn("year", F.year(F.col("year").cast("timestamp")))
@@ -231,6 +236,10 @@ dm.shape
 
 # COMMAND ----------
 
+dm.month.max()
+
+# COMMAND ----------
+
 dm.to_csv(os.path.join(path, 'Workspace/Construct//monthly-valid-subsidy-bycard'+ samplesize + '.csv'), index=False)
 
 # COMMAND ----------
@@ -242,7 +251,7 @@ dm.to_csv(os.path.join(path, 'Workspace/Construct//monthly-valid-subsidy-bycard'
 
 # COMMAND ----------
 
-subsidy_anymonth = dm[(dm.month > "2021-12-31") & (dm.month < "2024-04-01")].groupby("cardnumber", as_index = False).agg({"subsidy_month" : "max"})
+subsidy_anymonth = dm[(dm.month > "2021-12-31") & (dm.month < "2024-10-01")].groupby("cardnumber", as_index = False).agg({"subsidy_month" : "max"})
 subsidy_anymonth.columns = ["cardnumber", "subsidy_anymonth"]
 subsidy_anymonth = dm.merge(subsidy_anymonth,
                             on = "cardnumber",
@@ -250,8 +259,8 @@ subsidy_anymonth = dm.merge(subsidy_anymonth,
 fig, axes = plt.subplots(nrows=1,ncols=1, figsize = (10, 5))
 fig.subplots_adjust(hspace = 0.4)
 
-perc_subsidy =  subsidy_anymonth[ (dm.month > "2021-12-31") & (dm.month < "2024-04-01") & (subsidy_anymonth.subsidy_anymonth == 1)].groupby(["month"]).agg({"subsidy_month": lambda x: np.mean(x)*100})
-perc_subsidy.subsidy_month.plot(title = f"NON-LINKED DATA  \n Percentage of CARDS with subsidy trips each month \n over CARDS travelling that month that had the subsidy ANY month Jan22-Mar24 \n {samplesize}")
+perc_subsidy =  subsidy_anymonth[ (dm.month > "2021-12-31") & (dm.month < "2024-12-01") & (subsidy_anymonth.subsidy_anymonth == 1)].groupby(["month"]).agg({"subsidy_month": lambda x: np.mean(x)*100})
+perc_subsidy.subsidy_month.plot(title = f"NON-LINKED DATA  \n Percentage of CARDS with subsidy trips each month \n over CARDS travelling that month that had the subsidy ANY month Jan22-Nov24 \n {samplesize}")
 plt.xlabel("Month")
 plt.ylabel("%")
 plt.ylim(0, 100)
@@ -281,9 +290,13 @@ dm = pd.read_csv(os.path.join(path, 'Workspace/Construct//monthly-valid-subsidy-
 dm["period"] = np.NaN
 dm.loc[(dm.month >= "2022-01-01")   & (dm.month <=  "2023-01-31"), "period"] = 0
 dm.loc[(dm.month >=  "2023-03-01")  & (dm.month <=  "2023-12-31"), "period"] = 1
-dm.loc[(dm.month >=  "2024-01-01")  & (dm.month <=  "2024-03-31"), "period"] = 2
+dm.loc[(dm.month >=  "2024-01-01")  & (dm.month <=  "2024-11-31"), "period"] = 2
 print(dm.period.value_counts())
 
+
+# COMMAND ----------
+
+dm.month.max()
 
 # COMMAND ----------
 
@@ -294,6 +307,8 @@ cards_t1 = set(dm.cardnumber[dm.period == 1])
 cards_t2 = set(dm.cardnumber[dm.period == 2])
 
 dm["cards_t0"] = dm.cardnumber.isin(cards_t0)
+dm["cards_t1"] = dm.cardnumber.isin(cards_t1)
+dm["cards_t2"] = dm.cardnumber.isin(cards_t2)
 
 cards_always = set(cards_t0).intersection(cards_t1).intersection(cards_t2)
 cards_after = set(cards_t1).union(cards_t2)
@@ -393,7 +408,7 @@ s["subsidy_any_period"] = ( (s.subsidy_t0 == 1) | (s.subsidy_t1 == 1) | (s.subsi
 print("OK:", by_card_period.cardnumber.nunique() ==   s.cardnumber.nunique())
 
 # Add dataset with some info at the card level
-bycard = dm[["cardnumber", "profile_final", "cards_t0"]].drop_duplicates()
+bycard = dm[["cardnumber", "profile_final", "cards_t0", "cards_t1" , "cards_t2"]].drop_duplicates()
 print("OK:",bycard.shape[0] == bycard.cardnumber.nunique())
 
 
@@ -409,15 +424,17 @@ del by_card_period, bycard
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC We have 83 anonymous with subsidy! However, we will just use the adulto ones as a comparison. Also, we have 288 apoyo with no subsidy at any period among the relevant ones.
+# MAGIC We have some anonymous with subsidy! However, we will just use the adulto ones as a comparison. Also, we have 288 apoyo with no subsidy at any period among the relevant ones.
+
+# COMMAND ----------
+
+s.columns
 
 # COMMAND ----------
 
 #hadlost23
 s['hadlost23'] = (s.subsidy_t0 == 1) & (s.subsidy_t1 == 0) 
-
-s['hadlost23_v2'] = s['hadlost23']
-s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1.isnull())  & (s.subsidy_t2 == 0), 'hadlost23_v2'] = 1
+s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1.isnull())  & (s.subsidy_t2 == 0), 'hadlost23'] = 1
 
 
 #hadlost24
@@ -425,23 +442,20 @@ s['hadlost24'] =  (s.subsidy_t0 == 1) & (s.subsidy_t1 == 1) & (s.subsidy_t2 == 0
 
 #hadkept
 s['hadkept'] = (s.subsidy_t0 == 1) &  (s.subsidy_t1 == 1) & (s.subsidy_t2 == 1)
-s['hadkept_v2'] = s['hadkept']
-s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()), 'hadkept_v2']  = True
-s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1.isnull()) & (s.subsidy_t2 == 1), 'hadkept_v2']  = True
+s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()), 'hadkept']  = True
+s.loc[(s.subsidy_t0 == 1) & (s.subsidy_t1.isnull()) & (s.subsidy_t2 == 1), 'hadkept']  = True
 
 
 # newly
 s['gainedhas'] = (s.subsidy_t0 == 0)  & (s.subsidy_t2 == 1) 
 s.loc[(s.subsidy_t0 == 0) &  (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()), 'gainedhas'] = True
-s.loc[(s.subsidy_t0.isnull()) &  (s.subsidy_t2 == 1), 'gainedhas'] = True
-s.loc[(s.subsidy_t0.isnull()) &  (s.subsidy_t1 == 1) & (s.subsidy_t2.isnull()), 'gainedhas'] = True
 
 # missings
 s['missing_after'] =  (s.subsidy_t1.isnull())  & (s.subsidy_t2.isnull()) 
 
 # to dummies instead of booleans and add a categorical variable
 categ =  ["hadlost23", "hadlost24", "hadkept", "gainedhas", "missing_after"]
-s[categ + ["hadlost23_v2", "hadkept_v2"] ] = s[categ + ["hadlost23_v2", "hadkept_v2"]] * 1
+s[categ ] = s[categ ] * 1
 
 # check whether they are mutually exclusive
 print(s[categ].sum())
@@ -450,51 +464,31 @@ print(s[categ].sum(axis = 1).unique())
 # add a categorical variable
 s["treatment"] = ""
 for v in categ:
+    s.loc[~ s.cards_t0, v] = 0
+    s.loc[~ ( (s.cards_t1) |( s.cards_t2)), v] = 0
     s.loc[s[v] == 1, "treatment"] = v
 s.treatment.value_counts()
 
 # COMMAND ----------
 
-
-# check whether they are mutually exclusive
-categ =  ["hadlost23_v2", "hadlost24", "hadkept_v2", "gainedhas", "missing_after"]
-
-# check whether they are mutually exclusive
-print(s[categ].sum())
-print(s[categ].sum(axis = 1).unique())
-
-# add a categorical variable
-s["treatment_v2"] = ""
-for v in categ:
-    s.loc[s[v] == 1, "treatment_v2"] = v
-s.treatment.value_counts()
-
-# COMMAND ----------
-
-s.drop(columns = categ + ["hadlost23", "hadkept"], inplace = True)
+s.drop(columns = categ , inplace = True)
 
 # COMMAND ----------
 
 # no treatment for those anonymous
 s.loc[s.profile_final == "anonymous", "treatment"] = "anonymous"
 s.loc[s.profile_final == "adulto", "treatment"] = "adulto"
+
+# sample: only cards present before and after
+s.loc[~ s.cards_t0, "treatment"] = ""
+s.loc[~ ( (s.cards_t1) |( s.cards_t2)), "treatment"] = ""
+
 pd.crosstab(s.profile_final, s.treatment)
 
 # COMMAND ----------
 
-s.loc[s.profile_final == "anonymous", "treatment_v2"] = "anonymous"
-s.loc[s.profile_final == "adulto", "treatment_v2"] = "adulto"
-pd.crosstab(s.profile_final, s.treatment_v2)
-
-# COMMAND ----------
-
-pd.crosstab(s.treatment, s.treatment_v2)
-
-# COMMAND ----------
-
 # Was there before policy change or after
-s["cards_t0"]    = s.subsidy_t0.notnull()
-s["cards_after"] = (s.subsidy_t1.notnull()) | (s.subsidy_t2.notnull())
+s.columns
 
 # COMMAND ----------
 
