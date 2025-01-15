@@ -12,12 +12,11 @@ from tqdm import tqdm
 # COMMAND ----------
 
 DATA_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/Data'
-os.makedirs(DATA_DIR, exist_ok=True) # Creates the given directory if it does not exist
 dbutils.fs.mkdirs(DATA_DIR) # Creates the given directory if it does not exist
 
 # COMMAND ----------
 
-dbutils.fs.ls('/Volumes/prd_csc_mega/sColom15/vColom15')
+# MAGIC %sh du -h /Volumes/prd_csc_mega/sColom15/vColom15/Data
 
 # COMMAND ----------
 
@@ -47,23 +46,10 @@ for blob in tqdm(blobs):
     target = f'{DATA_DIR}/{blob.name}'
     # Only download files that are not yet downloaded
     if not dbfs_file_exists(target):
-        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        dbutils.fs.mkdirs(str(Path(target).parent))
+        print(f'downloading to: {target}')
         blob.download_to_filename(filename=target, client=storage_client)
-
-        # upload to dbfs, aka the enterprise data lake
-        dbutils.fs.cp(f"file:{target}", f"dbfs:{target}")
-        print(f'{target} UPLOADED')
-
-        # remove file after uploading to dbfs to free up local fs space
-        os.remove(target)
-    #else:
-        #print(f'{target} already exists, skipping')
 
 # COMMAND ----------
 
 # MAGIC %sh du -h /Volumes/prd_csc_mega/sColom15/vColom15/Data
-
-# COMMAND ----------
-
-# Clean up empty local temp folders
-rmtree(DATA_DIR)
