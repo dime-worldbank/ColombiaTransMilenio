@@ -29,36 +29,37 @@ import os
 # COMMAND ----------
 
 # Directories
-pathdb  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
-path = '/dbfs/' + pathdb
-user = os.listdir('/Workspace/Repos')[0]
-git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio/'
-git2 = '/Workspace/Repos/' +user+ '/Colombia-BRT_IE-temp/'
+V_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/'
+user = 'wbrau@worldbank.org'
+git = f'/Workspace/Users/{user}/ColombiaTransMilenio'
+#git2 = f'/Workspace/Users/{user}/Colombia-BRT_IE-temp/'
+
 ## Important sub-directories for this notebook
-byheader_dir = path + '/Workspace/Raw/byheader_dir/'
+raw_dir      =  V_DIR + '/Workspace/Raw/'
+byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
 
 # COMMAND ----------
 
-# MAGIC 
-%run ./utils/import_test.py
-%run ./utils/packages.py
-%run ./utils/setup.py
-%run ./utils/utilities.py
-
-
-## Note that these won't work if there are errors in the code. Make sure first that everything is OK!
-
-# Functions
-import_test_function("Running hola.py works fine :)")
-import_test_packages("Running packages.py works fine :)")
-import_test_setup("Running setup.py works fine :)")
-import_test_utilities("Running utilities.py works fine :)")
-
-# Classes and others
-objects_in_dir = dir()
-print('ImportTestClass'    in objects_in_dir, 
-      'spark_df_handler'   in objects_in_dir,
-      'user_window'        in objects_in_dir)
+# MAGIC
+# MAGIC %run ./utils/import_test.py
+# MAGIC %run ./utils/packages.py
+# MAGIC %run ./utils/setup.py
+# MAGIC %run ./utils/utilities.py
+# MAGIC
+# MAGIC
+# MAGIC ## Note that these won't work if there are errors in the code. Make sure first that everything is OK!
+# MAGIC
+# MAGIC # Functions
+# MAGIC import_test_function("Running hola.py works fine :)")
+# MAGIC import_test_packages("Running packages.py works fine :)")
+# MAGIC import_test_setup("Running setup.py works fine :)")
+# MAGIC import_test_utilities("Running utilities.py works fine :)")
+# MAGIC
+# MAGIC # Classes and others
+# MAGIC objects_in_dir = dir()
+# MAGIC print('ImportTestClass'    in objects_in_dir, 
+# MAGIC       'spark_df_handler'   in objects_in_dir,
+# MAGIC       'user_window'        in objects_in_dir)
 
 # COMMAND ----------
 
@@ -502,9 +503,10 @@ rolling_user_month_window_rev = Window.partitionBy('cardnumber')\
 headers = []
 files = []
 
+# get the headers
 for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
-    file_path = path + f'/Workspace/Raw/since2020/{v}/'
+    file_path = f'/{raw_dir}/since2020/{v}/'
     files_dir = os.listdir(file_path)
     print(v, len(files_dir))
 
@@ -523,9 +525,7 @@ for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
             except:
                 csvin = pd.read_csv(file_path + filename, nrows = 0) # this opens zip files as well
                 headers.append(list(csvin.columns))
-
-# COMMAND ----------
-
+                
 # see how many and which headers we have
 seed(510)
 unique_headers = list(set(tuple(x) for x in headers)) # this will make that each time it is run
@@ -599,7 +599,7 @@ del(headers, files)
 
 # COMMAND ----------
 
-# Move the files to folders based on their header
+# Create a folder for each header
 try:
    os.mkdir(byheader_dir)
 except FileExistsError:
@@ -609,15 +609,16 @@ print(os.listdir(byheader_dir))
 
 
 # check we have no duplicate filenames!
-# if we had, we need to differentiate files by their Dual versus Troncal versus Zonalorigin
+# if we had, we need to differentiate files by their Dual versus Troncal versus Zonal origin
 dupfiles = [item for sublist in list(file_header_dict.values()) for item in sublist]
 
 for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
-    file_path = path + f'/Workspace/Raw/since2020/{v}/'
+    file_path = + f'{raw_dir}/since2020/{v}/'
     dupfiles = [s.replace(file_path, "") for s in dupfiles]
 
 print(len(dupfiles), len(set(dupfiles)))
 
+# COMMAND ----------
 
 # copy each file in each header folder, if not already copied
 
