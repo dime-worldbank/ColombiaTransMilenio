@@ -8,20 +8,29 @@ TBC
 #### 1. Download newest data: `data-fetch`
   - From TransMilenio GCloud API
   - Job that automatically runs all Mondays
+
 #### 2. Put together old and new data: `data-organize`
-  - Create a Workspace folder and move data from:
-    - Ingestion Point (Documents folder)
-    - Downloads Point (Data folder)
-  - _TBC data before 2020_
-#### 3. Clean data: `data-clean`
-- Uniform structure for all data
-  1. Classify raw data files based on **headers**, and reorganize them in folders by header.
-  2. Each header has a specific format. Import them with different spark_handlers to apply the right transformations to each.
 
-### 4. Sampling: `data-sample`
+- `data-organize-fromDocuments`:
+    - Creates a Workspace/Raw folder and moves data from the ingestion Point (Documents folder)
+    - We do this just once (after uploading all our data to MEGA)
+    - _TBC data before  2020_
+  
+ -  `data-organize-fromData`: 
+    - Moves data to the Workspace/Raw from the downloads Point (Data folder)
+    - We do this periodically (after fetching a new batch of data every week) 
+     
+  
+#### 3. Classify data based on headers: `data-byheader`
+  - Reorganize data files in folders by header 
 
-### 5. Construction: 
+#### 4. Clean data: `data-clean`
+- Uniform structure for all data. Each header has a specific format. Import them with different spark_handlers to apply the right transformations to each.
+- Remove duplicates
 
+### 5. Sampling: `data-sample`
+
+### 6. Construction: 
 1.  `constr-treatment-groups`
 2.  `constr-monthly-panel-treatment`
 
