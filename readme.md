@@ -19,6 +19,7 @@ TBC
  -  `data-organize-fromData`: 
     - Moves data to the Workspace/Raw from the downloads Point (Data folder)
     - We do this periodically (after fetching a new batch of data every week) 
+    - Job that automatically runs all Mondays, if `data-fetch` succeeds
      
   
 #### 3. Classify data based on headers: `data-byheader`

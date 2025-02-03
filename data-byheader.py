@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Clean data
+# MAGIC # Reorganize data by header
 # MAGIC
 
 # COMMAND ----------
@@ -25,6 +25,15 @@ import shutil
 import sys
 import os
 
+!pip install tqdm
+from tqdm import tqdm
+
+import pandas as pd
+
+
+# COMMAND ----------
+
+import pandas as pd
 
 # COMMAND ----------
 
@@ -34,9 +43,10 @@ user = 'wbrau@worldbank.org'
 git = f'/Workspace/Users/{user}/ColombiaTransMilenio'
 #git2 = f'/Workspace/Users/{user}/Colombia-BRT_IE-temp/'
 
-## Important sub-directories for this notebook
+# Important sub-directories for this notebook
 raw_dir      =  V_DIR + '/Workspace/Raw/'
 byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
+
 
 
 # COMMAND ----------
@@ -81,6 +91,10 @@ for x in range(len(unique_headers)):
       print(f'----------------')
       print(sum([h == list(head) for h in headers]), "files")
       print(head)
+
+# COMMAND ----------
+
+fin
 
 # COMMAND ----------
 
