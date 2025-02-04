@@ -30,15 +30,18 @@ from tqdm import tqdm
 
 import pandas as pd
 
+from random import seed
+
 
 # COMMAND ----------
 
-import pandas as pd
+from random import seed
 
 # COMMAND ----------
 
 # Directories
-V_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/'
+S_DIR = '/Volumes/prd_csc_mega/sColom15/'
+V_DIR = f'{S_DIR}vColom15/'
 user = 'wbrau@worldbank.org'
 git = f'/Workspace/Users/{user}/ColombiaTransMilenio'
 #git2 = f'/Workspace/Users/{user}/Colombia-BRT_IE-temp/'
@@ -51,55 +54,23 @@ byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC # (0) Reorganize files by header & unzip
+# MAGIC %sql
+# MAGIC
+# MAGIC /* Set default catalog and schema */
+# MAGIC
+# MAGIC USE CATALOG prd_mega;
+# MAGIC USE SCHEMA scolom15;
+# MAGIC
+# MAGIC SELECT
+# MAGIC   current_catalog() as current_catalog,
+# MAGIC   current_schema()  as current_schema;
+# MAGIC
 
 # COMMAND ----------
 
-headers = []
-files = []
-
-# get the headers
-for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
-
-    file_path = f'/{raw_dir}/since2020/{v}/'
-    files_dir = os.listdir(file_path)
-    print(v, len(files_dir))
-
-
-    for filename in tqdm(files_dir):
-        files.append(file_path + filename)
-        try:
-            with open(file_path + filename) as fin:
-                csvin = csv.reader(fin)
-                headers.append(next(csvin, []))
-        except:
-            try:
-                with open(file_path + filename, encoding = 'latin1') as fin:
-                    csvin = csv.reader(fin)
-                    headers.append(next(csvin, []))
-            except:
-                csvin = pd.read_csv(file_path + filename, nrows = 0) # this opens zip files as well
-                headers.append(list(csvin.columns))
-                
-# see how many and which headers we have
-seed(510)
-unique_headers = list(set(tuple(x) for x in headers)) # this will make that each time it is run
-print(f'Unique headers: {len(unique_headers)}')
-for x in range(len(unique_headers)):
-      head = unique_headers[x] 
-      print(f'----------------')
-      print(sum([h == list(head) for h in headers]), "files")
-      print(head)
-
-# COMMAND ----------
-
-fin
-
-# COMMAND ----------
-
+# Parameters
 # Old list of headers by Sebastian for 2016-2017 data:  letters (one - seven)
-# New list of headers by Wendy for data since 2020: numbers (8-16)
+# New list of headers by Wendy for data since 2020: numbers (since 8)
 
 unique_header_dict = {'header_one': 
                             ['Fecha de Liquidación', 'Fecha de Uso', 'Day Group Type', 'Hora Pico S/N', 'Fase',
@@ -117,7 +88,7 @@ unique_header_dict = {'header_one':
                     'header_seven': 
                           ['Fecha de Clearing', 'Fecha de Transaccion', 'DAY_GROUP_CD', 'Hora Pico SN', 'Emisor', 'Operador', 'Linea', 'Estacion', 'Acceso de Estación', 'Dispositivo', 'Tipo de Tarjeta', 'Nombre de Perfil', 'Numero de Tarjeta', 'Tipo de Tarifa', 'Saldo Previo a Transaccion', 'Valor', 'Saldo Despues de Transaccion'],
                     'header_08': 
-                        ['', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion',  'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
+                        ['Unnamed: 0', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion',  'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
                     'header_09':
                          ['Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
                     'header_10': 
@@ -127,21 +98,112 @@ unique_header_dict = {'header_one':
                     'header_12': 
                         ['Acceso_Estacion', 'Day_Group_Type', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
                     'header_13': 
-                        ['', 'Acceso_Estacion', 'Day_Group_Type', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
+                        ['Unnamed: 0', 'Acceso_Estacion', 'Day_Group_Type', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Sistema', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor'],
                    'header_14':  
-                       ['', 'Acceso_Estacion', 'Day_Group_Type', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Valor', 'ID_Vehiculo', 'Ruta', 'Tipo_Vehiculo', 'Sistema'],
+                       ['Unnamed: 0', 'Acceso_Estacion', 'Day_Group_Type', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Tipo_Tarifa', 'Tipo_Tarjeta', 'Valor', 'ID_Vehiculo', 'Ruta', 'Tipo_Vehiculo', 'Sistema'],
                     'header_15': 
-                        ['', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor', 'Sistema'],
+                        ['Unnamed: 0', 'Dispositivo', 'Emisor', 'Estacion_Parada', 'Fase', 'Fecha_Clearing', 'Fecha_Transaccion', 'Hora_Pico_SN', 'ID_Vehiculo', 'Linea', 'Nombre_Perfil', 'Numero_Tarjeta', 'Operador', 'Ruta', 'Saldo_Despues_Transaccion', 'Saldo_Previo_a_Transaccion', 'Tipo_Tarjeta', 'Tipo_Vehiculo', 'Valor', 'Sistema'],
                     'header_16': []}
 
-# check whether any type of header is missing in the unique list of headers
-for val in unique_headers: 
-    print(list(val) in list(unique_header_dict.values()))  
+broken_files = ["validacionDual20230630.csv",
+                "validacionTroncal20200725.csv",
+                "validacionZonal20200601.csv",
+                "validacionZonal20220628.csv"]
+
 
 
 # COMMAND ----------
 
-# file_header_dict maps each file to the corresponding header type
+# # Uncomment this to test for broken files
+
+#file_test_is_broken = '' # complete path of the file goes here
+
+#with open(file_test_is_broken, "r") as text_file:
+#    unknown = text_file.readlines()
+#unknown
+
+# COMMAND ----------
+
+headers = []
+files = []
+filenames = []
+
+# get the headers
+for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
+
+    file_path = f'/{raw_dir}/since2020/{v}/'
+    files_dir = os.listdir(file_path)
+    print(v, len(files_dir))
+
+
+    for filename in tqdm(files_dir):
+        
+        file_path_name = file_path + filename
+
+        if filename in broken_files:
+            continue
+
+        filenames.append(filename)
+        files.append(file_path_name)
+
+        try:
+            with open(file_path_name) as fin:
+                csvin = csv.reader(fin)
+                headers.append(next(csvin, []))
+        except:
+            try:
+                with open(file_path_name, encoding = 'latin1') as fin:
+                    csvin = csv.reader(fin)
+                    headers.append(next(csvin, []))
+            except:
+                csvin = pd.read_csv(file_path_name, nrows = 0) # this opens zip files as well
+                headers.append(list(csvin.columns))
+
+
+# COMMAND ----------
+
+             
+# see how many and which headers we have
+seed(510)
+unique_headers = list(set(tuple(x) for x in headers)) 
+print(f'Unique headers: {len(unique_headers)}')
+for x in range(len(unique_headers)):
+      head = unique_headers[x] 
+      print(f'----------------')
+      print(sum([h == list(head) for h in headers]), "files")
+      print(head)
+
+# COMMAND ----------
+
+# check whether any type of header is missing in the unique list of headers
+# if not, we need to manually add a new type of header to the list
+for val in unique_headers: 
+    print( list(val) in list(unique_header_dict.values()) )
+
+for val in unique_headers: 
+    assert list(val) in list(unique_header_dict.values())
+
+# COMMAND ----------
+
+# Check all lists have the same length
+assert len(files) == len(filenames)
+assert len(files) == len(headers)
+
+# Check no duplicates in original file paths
+assert len(files) == len(set(files))
+
+# Check no duplicates in names alone!
+# If not, we will have problems when moving to folders by header 
+# as two different files might have same name
+assert len(filenames) == len(set(filenames))
+
+
+
+
+# COMMAND ----------
+
+# file_header_dict lists all files per header
+# with the format {header_number : [list of files]}
 
 file_header_dict = {key: [] for key in unique_header_dict.keys()}
 
@@ -153,13 +215,36 @@ for file, header in zip(files, headers):
 
 # see number of files in each header
 for key, val in file_header_dict.items():
-    print(f"{key}: {len(files)}")
+    print(f"{key}: {len(val)}")
 
-del(headers, files)
+# file_header_dict_inv maps each file to the header
+# with the format {file : header_number}
+file_header_dict_inv = {}
+
+for key, values in file_header_dict.items():
+    for value in values:
+        file_header_dict_inv[value] = key 
+
 
 # COMMAND ----------
 
-# Create a folder for each header
+# Create dataset with filename, complete file path, and corresponding header
+# This is to keep track of the already processed 
+
+file_to_header_df = pd.DataFrame({  "filename": filenames,
+                                    "raw_filepath": files})
+file_to_header_df["header"] = file_to_header_df.raw_filepath.map(file_header_dict_inv)
+
+# check there is a header assigned to each file
+assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# Create the folder to save files by header
 try:
    os.mkdir(byheader_dir)
 except FileExistsError:
@@ -168,15 +253,6 @@ except FileExistsError:
 print(os.listdir(byheader_dir))
 
 
-# check we have no duplicate filenames!
-# if we had, we need to differentiate files by their Dual versus Troncal versus Zonal origin
-dupfiles = [item for sublist in list(file_header_dict.values()) for item in sublist]
-
-for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
-    file_path = + f'{raw_dir}/since2020/{v}/'
-    dupfiles = [s.replace(file_path, "") for s in dupfiles]
-
-print(len(dupfiles), len(set(dupfiles)))
 
 # COMMAND ----------
 
