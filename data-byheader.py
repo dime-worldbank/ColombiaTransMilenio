@@ -20,22 +20,17 @@
 !pip install tqdm
 !pip install pyunpack
 !pip install patool
+!pip install deltalake
 
 import shutil
 import sys
 import os
 
-!pip install tqdm
+
 from tqdm import tqdm
-
 import pandas as pd
-
 from random import seed
-
-
-# COMMAND ----------
-
-from random import seed
+from deltalake import DeltaTable, write_deltalake
 
 # COMMAND ----------
 
@@ -65,6 +60,29 @@ byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
 # MAGIC   current_catalog() as current_catalog,
 # MAGIC   current_schema()  as current_schema;
 # MAGIC
+
+# COMMAND ----------
+
+# Create table to store filename to header name mapping
+table_name = "file_to_header"
+
+# Check if the Delta table exists
+table_exists = spark.catalog.tableExists(table_name)
+
+# Create Delta table if it does not exist
+if not table_exists:
+    spark.sql(f"""
+    CREATE TABLE {table_name} (
+        filename     STRING,
+        raw_filepath STRING,
+        header       STRING
+    )
+    USING DELTA
+""")
+
+# Read the table
+all_files_to_header = spark.read.format("delta").table(table_name)
+all_files_to_header  = all_files_to_header.toPandas()
 
 # COMMAND ----------
 
@@ -240,11 +258,17 @@ assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
 
 # COMMAND ----------
 
-
+pd.concat([all_files_to_header, file_to_header_df]
 
 # COMMAND ----------
 
-# Create the folder to save files by header
+## add to the table with preexistent files
+
+file_to_header_df = pd.concat(all_files_to_header
+
+# COMMAND ----------
+
+# Create general folder to save files by header
 try:
    os.mkdir(byheader_dir)
 except FileExistsError:
@@ -255,6 +279,23 @@ print(os.listdir(byheader_dir))
 
 
 # COMMAND ----------
+
+# remove files that do not belong to the folder
+
+    # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
+    # print(Files to remove:", len(remove))
+    # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
+    #if len(remove) > 0:
+    #    for file in remove:
+    #        os.remove(header_dir + "/" + file)
+    #        print('Deleted ' + header_dir + "/" + file)
+
+
+# COMMAND ----------
+
+    # This is commented until we work with the full data
+    # BEWARE THAT NOW WE ARE REMOVING ZIP FILES: IN THE NEXT LINES OF CODE WE SHOULD CHECK FOR FILENAMES NO MATTER IF THEY END WITH .ZIP OR NOT!!!!!!!!!!!!!
+
 
 # copy each file in each header folder, if not already copied
 
@@ -277,15 +318,6 @@ for folder, files in file_header_dict.items():
                 shutil.copy(file, header_dir) # copy if it does not exist
                 print(f"Copied {file} to {header_dir}")
             
-    # This is commented until we work with the full data
-    # ALSO, BEWARE THAT NOW WE ARE REMOVING ZIP FILES: WE SHOULD CHECK FOR FILENAMES NO MATTER IF THEY END WITH .ZIP OR NOT
-    # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
-    # print(Files to remove:", len(remove))
-    # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
-    #if len(remove) > 0:
-    #    for file in remove:
-    #        os.remove(header_dir + "/" + file)
-    #        print('Deleted ' + header_dir + "/" + file)
    
 # see what we just saved
 for folder, files in file_header_dict.items():
