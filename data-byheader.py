@@ -25,7 +25,7 @@
 import shutil
 import sys
 import os
-
+import zipfile
 
 from tqdm import tqdm
 import pandas as pd
@@ -189,7 +189,6 @@ for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
 
 # COMMAND ----------
 
-             
 # see how many and which headers we have
 seed(510)
 unique_headers = list(set(tuple(x) for x in headers)) 
@@ -200,7 +199,6 @@ for x in range(len(unique_headers)):
       print(sum([h == list(head) for h in headers]), "files")
       print(head)
 
-# COMMAND ----------
 
 # check whether any type of header is missing in the unique list of headers
 # if not, we need to manually add a new type of header to the list
@@ -209,8 +207,6 @@ for val in unique_headers:
 
 for val in unique_headers: 
     assert list(val) in list(unique_header_dict.values())
-
-# COMMAND ----------
 
 # Check all lists have the same length
 assert len(files) == len(filenames)
@@ -224,10 +220,6 @@ assert len(files) == len(set(files))
 # as two different files might have same name
 assert len(filenames) == len(set(filenames))
 
-
-
-
-# COMMAND ----------
 
 # file_header_dict lists all files per header
 # with the format {header_number : [list of files]}
@@ -252,7 +244,6 @@ for key, values in file_header_dict.items():
     for value in values:
         file_header_dict_inv[value] = key 
 
-
 # COMMAND ----------
 
 # Create dataset with filename, complete file path, and corresponding header
@@ -265,26 +256,47 @@ file_to_header_df["header"] = file_to_header_df.raw_filepath.map(file_header_dic
 # check there is a header assigned to each file
 assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
 
-# COMMAND ----------
-
 ## add to the table with preexistent files
 all_files_to_header = pd.concat([all_files_to_header, file_to_header_df], axis = 0).drop_duplicates()
 
+# COMMAND ----------
 
-
-
+## check there are no duplicates in filename
+## this can happen if the same file had different headers in different rounds
+assert len(all_files_to_header.filename)== len(set(all_files_to_header.filename))
 
 # COMMAND ----------
 
-# remove files that do not belong to the folder
+# Include the names of zipped files in the list
+all_files_to_header["zipped"] = [f.endswith('.zip') * 1 for f in all_files_to_header.filename ]
+zip_files = all_files_to_header[all_files_to_header.zipped == 1].reset_index(drop = True)
 
-    # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
-    # print(Files to remove:", len(remove))
-    # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
-    #if len(remove) > 0:
-    #    for file in remove:
-    #        os.remove(header_dir + "/" + file)
-    #        print('Deleted ' + header_dir + "/" + file)
+# COMMAND ----------
+
+n_zip_files = zip_files.shape[0]
+if len(n_zip_files) > 0:
+        for z in tqdm(range(n_zip_files)):
+
+# COMMAND ----------
+
+z = 0
+zip_file_path = zip_files.raw_filepath[0]
+
+
+with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+    unzipped_files = zip_ref.namelist()
+
+# COMMAND ----------
+
+zip_file_path
+
+# COMMAND ----------
+
+unzipped_files
+
+# COMMAND ----------
+
+zip_files = zip_ref.namelist()
 
 
 # COMMAND ----------
@@ -294,6 +306,7 @@ all_files_to_header = pd.concat([all_files_to_header, file_to_header_df], axis =
 
 
 # copy each file in each header folder, if not already copied
+# in case of zip files: do not copy, extract if not already extracted
 
 for folder, files in file_header_dict.items():
     print('FOLDER: ' + folder ) # folder 
@@ -311,6 +324,7 @@ for folder, files in file_header_dict.items():
           
             # Check if the file already exists in the destination directory
             if not os.path.exists(destination_file):
+
                 shutil.copy(file, header_dir) # copy if it does not exist
                 print(f"Copied {file} to {header_dir}")
             
@@ -322,6 +336,19 @@ for folder, files in file_header_dict.items():
     f = os.listdir(header_dir)
     print(len(f))
     print(files[:1])
+
+# COMMAND ----------
+
+# remove files that do not belong to the folder
+
+    # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
+    # print(Files to remove:", len(remove))
+    # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
+    #if len(remove) > 0:
+    #    for file in remove:
+    #        os.remove(header_dir + "/" + file)
+    #        print('Deleted ' + header_dir + "/" + file)
+
 
 # COMMAND ----------
 
