@@ -63,6 +63,15 @@ byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
 
 # COMMAND ----------
 
+# Create general folder to save files by header
+try:
+   os.mkdir(byheader_dir)
+except FileExistsError:
+    print("byheader directory exists")
+
+print(os.listdir(byheader_dir))
+
+
 # Create table to store filename to header name mapping
 table_name = "file_to_header"
 
@@ -258,23 +267,10 @@ assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
 
 # COMMAND ----------
 
-pd.concat([all_files_to_header, file_to_header_df]
-
-# COMMAND ----------
-
 ## add to the table with preexistent files
+all_files_to_header = pd.concat([all_files_to_header, file_to_header_df], axis = 0).drop_duplicates()
 
-file_to_header_df = pd.concat(all_files_to_header
 
-# COMMAND ----------
-
-# Create general folder to save files by header
-try:
-   os.mkdir(byheader_dir)
-except FileExistsError:
-    print("byheader directory exists")
-
-print(os.listdir(byheader_dir))
 
 
 
@@ -329,21 +325,11 @@ for folder, files in file_header_dict.items():
 
 # COMMAND ----------
 
-# UNZIP
-for folder in os.listdir(byheader_dir):
-    all_files = os.listdir(byheader_dir + folder)
-    zip_files = [f for f in all_files if f.endswith('.zip')]
-    print(f"Found {len(zip_files)} zip files out of {len(all_files)} in {folder}")
 
-    if len(zip_files) > 0:
-        for zip_file in tqdm(zip_files):
 
-            zip_file_path = byheader_dir + folder + "/" + zip_file
+# 
 
-             # Extract the ZIP file
-            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-                zip_ref.extractall(byheader_dir + folder)
 
-            # Delete the ZIP file after extraction
-            os.remove(zip_file_path)
 
+# overwrite delta table
+write_deltalake("tmp/some_delta_lake", df3, mode="overwrite")
