@@ -29,14 +29,12 @@
 # COMMAND ----------
 
 # Directories
-import os
-pathdb  = '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/'
-path = '/dbfs/' + pathdb
-user = os.listdir('/Workspace/Repos')[0]
-git = '/Workspace/Repos/' +user+ '/ColombiaTransMilenio/'
-git2 = '/Workspace/Repos/' +user+ '/Colombia-BRT_IE-temp/'
-## Important sub-directories for this notebook
-byheader_dir = path + '/Workspace/Raw/byheader_dir/'
+S_DIR = '/Volumes/prd_csc_mega/sColom15/'
+V_DIR = f'{S_DIR}vColom15/'
+user = 'wbrau@worldbank.org'
+git = f'/Workspace/Users/{user}/ColombiaTransMilenio'
+#git2 = f'/Workspace/Users/{user}/Colombia-BRT_IE-temp/'
+
 
 # COMMAND ----------
 
@@ -61,17 +59,17 @@ samplesize = "_sample10"
 !pip install tqdm
 !pip install pyunpack
 !pip install patool
-
+from pyspark.sql import functions as F
 import shutil
 import sys
+import os
 
-# MAGIC
-%run ./utils/import_test.py
-%run ./utils/packages.py
+#%run ./utils/import_test.py
+#%run ./utils/packages.py
 
 # Functions
-import_test_function("Running hola.py works fine :)")
-import_test_packages("Running packages.py works fine :)")
+#import_test_function("Running hola.py works fine :)")
+#import_test_packages("Running packages.py works fine :)")
 
 
 
@@ -105,15 +103,7 @@ price_full_23    = [2750, 2950] # same for 2024, though since Feb tariff unified
 
 # COMMAND ----------
 
-os.listdir('/dbfs/mnt/DAP')
-
-# COMMAND ----------
-
-os.listdir(os.path.join(path,f'Workspace/bogota-hdfs/'))
-
-# COMMAND ----------
-
-df = spark.read.format("parquet").load(os.path.join(pathdb,f'Workspace/bogota-hdfs/df_clean_relevant{samplesize}'))
+df = spark.read.format("parquet").load(os.path.join(V_DIR,f'Workspace/bogota-hdfs/df_clean_relevant{samplesize}'))
 df.cache()
 
 
@@ -220,6 +210,20 @@ dm = falldf.groupBy("cardnumber", "profile_final", "month") \
     F.mean("value_full_trip").alias("mean_value_trip")
 )
 dm = dm.toPandas()
+
+# COMMAND ----------
+
+dm.head()
+
+# COMMAND ----------
+
+monthly_by_profile = dm[(dm.month > "2021-12-31") & (dm.month < "2024-08-01")]
+cards_by_profile = monthly_by_profile.groupby("profile_final").agg({"cardnumber": "nunique"})
+monthly_by_profile = monthly_by_profile.groupby(["profile_final", "month"], as_index = False).agg({"n_trips" : "mean", "cardnumber" : "nunique"})
+byprofile = monthly_by_profile.groupby("profile_final").agg({"n_trips": "mean",
+                                                 "cardnumber": "mean"})
+byprofile["avg_cards_travelling"] = byprofile.cardnumber/ cards_by_profile.cardnumber
+byprofile
 
 # COMMAND ----------
 

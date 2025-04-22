@@ -20,7 +20,6 @@
 !pip install tqdm
 !pip install pyunpack
 !pip install patool
-!pip install deltalake
 
 import shutil
 import sys
@@ -67,31 +66,25 @@ byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
 try:
    os.mkdir(byheader_dir)
 except FileExistsError:
-    print("byheader directory exists")
+    print("byheader directory exists, with the folders:")
+    print(os.listdir(byheader_dir))
 
-print(os.listdir(byheader_dir))
-
-
-# Create table to store filename to header name mapping
+# Create table to list filename and header if it does not exist
 table_name = "file_to_header"
-
-# Check if the Delta table exists
 table_exists = spark.catalog.tableExists(table_name)
-
-# Create Delta table if it does not exist
 if not table_exists:
     spark.sql(f"""
     CREATE TABLE {table_name} (
-        filename     STRING,
         raw_filepath STRING,
         header       STRING
+        header_filepath STRING
     )
     USING DELTA
 """)
 
 # Read the table
-all_files_to_header = spark.read.format("delta").table(table_name)
-all_files_to_header  = all_files_to_header.toPandas()
+rawfiles_to_header  = spark.read.format("delta").table(table_name)
+rawfiles_to_header   = rawfiles_to_header .toPandas()
 
 # COMMAND ----------
 
@@ -151,40 +144,59 @@ broken_files = ["validacionDual20230630.csv",
 
 # COMMAND ----------
 
+rawfiles_to_header  = rawfiles_to_header.drop(columns = ["filename"]) 
+rawfiles_to_header.head()
+
+# COMMAND ----------
+
+# List all rawfiles
+all_raw_filepaths = []
+
+for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
+    file_dir       = f'/{raw_dir}/since2020/{v}/'
+    filenames       = os.listdir(file_path)
+    raw_filepaths_v = [file_path + filename for filename in files_dir]
+
+    all_raw_filepaths += filepaths_v
+
+# Keep the ones we should classify
+not_classified = list(set(all_raw_filepaths).difference(rawfiles_to_header.raw_filepath))
+not_classified_not_broken = [f for f in not_classified if os.path.basename(f) not in broken_files]
+print(len(not_classified_not_broken))
+
+# COMMAND ----------
+
+old_and_new_raw_filepaths = list(rawfiles_to_header.raw_filepath) + not_classified_not_broken
+old_and_new_filenames     = [os.path.basename(f) for f in old_and_new_raw_filepaths]
+
+# Check no duplicates in original file paths
+assert len(old_and_new_raw_filepaths) == len(set(old_and_new_raw_filepaths))
+
+# Check no duplicates in names alone!
+# If not, we will have problems when moving to folders by header 
+# as two different files might have same name
+assert len(old_and_new_filenames) == len(set(old_and_new_filenames))
+
+
+# COMMAND ----------
+
 headers = []
-files = []
-filenames = []
 
 # get the headers
-for v in ['ValidacionDual/', 'ValidacionTroncal/', 'ValidacionZonal/' ]:
+for f in not_classified_not_broken:
 
-    file_path = f'/{raw_dir}/since2020/{v}/'
-    files_dir = os.listdir(file_path)
-    print(v, len(files_dir))
-
-
-    for filename in tqdm(files_dir):
-        
-        file_path_name = file_path + filename
-
-        if filename in broken_files:
-            continue
-
-        filenames.append(filename)
-        files.append(file_path_name)
-
+    try:
+        with open(f) as fin:
+            csvin = csv.reader(fin)
+            headers.append(next(csvin, []))
+    except:
         try:
-            with open(file_path_name) as fin:
+            with open(f, encoding = 'latin1') as fin:
                 csvin = csv.reader(fin)
                 headers.append(next(csvin, []))
         except:
-            try:
-                with open(file_path_name, encoding = 'latin1') as fin:
-                    csvin = csv.reader(fin)
-                    headers.append(next(csvin, []))
-            except:
-                csvin = pd.read_csv(file_path_name, nrows = 0) # this opens zip files as well
-                headers.append(list(csvin.columns))
+            csvin = pd.read_csv(f, nrows = 0) # this opens zip files as well
+            headers.append(list(csvin.columns))
 
 
 # COMMAND ----------
@@ -201,25 +213,12 @@ for x in range(len(unique_headers)):
 
 
 # check whether any type of header is missing in the unique list of headers
-# if not, we need to manually add a new type of header to the list
+# if so, we need to manually add a new type of header to the list
 for val in unique_headers: 
-    print( list(val) in list(unique_header_dict.values()) )
-
-for val in unique_headers: 
-    assert list(val) in list(unique_header_dict.values())
+    assert list(val) in list(unique_header_dict.values()), f"{val} not in unique_header_dict"
 
 # Check all lists have the same length
-assert len(files) == len(filenames)
-assert len(files) == len(headers)
-
-# Check no duplicates in original file paths
-assert len(files) == len(set(files))
-
-# Check no duplicates in names alone!
-# If not, we will have problems when moving to folders by header 
-# as two different files might have same name
-assert len(filenames) == len(set(filenames))
-
+assert len(not_classified_not_broken) == len(headers)
 
 # file_header_dict lists all files per header
 # with the format {header_number : [list of files]}
@@ -247,116 +246,137 @@ for key, values in file_header_dict.items():
 # COMMAND ----------
 
 # Create dataset with filename, complete file path, and corresponding header
-# This is to keep track of the already processed 
-
-file_to_header_df = pd.DataFrame({  "filename": filenames,
-                                    "raw_filepath": files})
+file_to_header_df = pd.DataFrame({ "raw_filepath": not_classified_not_broken})
 file_to_header_df["header"] = file_to_header_df.raw_filepath.map(file_header_dict_inv)
 
 # check there is a header assigned to each file
-assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
+if file_to_header_df.shape[0] > 0 :
+    assert file_to_header_df.header.isin(unique_header_dict.keys()).mean() == 1
 
 ## add to the table with preexistent files
-all_files_to_header = pd.concat([all_files_to_header, file_to_header_df], axis = 0).drop_duplicates()
+rawfiles_to_header  = pd.concat([rawfiles_to_header , file_to_header_df], axis = 0).drop_duplicates()
 
-# COMMAND ----------
-
-## check there are no duplicates in filename
-## this can happen if the same file had different headers in different rounds
-assert len(all_files_to_header.filename)== len(set(all_files_to_header.filename))
-
-# COMMAND ----------
-
+## recheck there are no duplicates in filename
+filenames = [os.path.basename(f) for f in rawfiles_to_header.raw_filepath]
+assert len(filenames) == len(set(filenames))
+           
 # Include the names of zipped files in the list
-all_files_to_header["zipped"] = [f.endswith('.zip') * 1 for f in all_files_to_header.filename ]
-zip_files = all_files_to_header[all_files_to_header.zipped == 1].reset_index(drop = True)
+rawfiles_to_header ["zipped"] = [f.endswith('.zip') * 1 for f in rawfiles_to_header.raw_filepath ]
+zip_files = rawfiles_to_header[rawfiles_to_header.zipped == 1].reset_index(drop = True)
+
+# Check that each zip file contains just one file
+for zip_path in tqdm(zip_files.raw_filepath):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+       assert len(zip_ref.namelist()) == 1
 
 # COMMAND ----------
 
-n_zip_files = zip_files.shape[0]
-if len(n_zip_files) > 0:
-        for z in tqdm(range(n_zip_files)):
+
+def unzip_and_rename(zip_path, output_dir):
+
+    '''
+    Inputs:
+    * zip_path: complete zip file path
+    * output_dir: output directory
+
+    Output:
+    * Saving unzipped file in output_dir with the same name as the zip file, but without the .zip extension
+    * Returns the name of the unzipped file
+    '''
+
+    base_name       = os.path.basename(zip_path)
+    base_name_nozip = os.path.splitext(base_name)[0]  # original zip file name
+
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        inner_file = zip_ref.namelist()[0] # before we asserte all zips had only one zipped file inside
+       
+        ext = os.path.splitext(inner_file)[1]  # zipped file extension
+        output_name = base_name_nozip + ext
+
+        output_file_path = os.path.join(output_dir, output_name)
+
+        with zip_ref.open(inner_file) as source, open(output_file_path, 'wb') as target:
+            target.write(source.read())
+
+        return output_name
+
+
 
 # COMMAND ----------
 
-z = 0
-zip_file_path = zip_files.raw_filepath[0]
-
-
-with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-    unzipped_files = zip_ref.namelist()
-
-# COMMAND ----------
-
-zip_file_path
-
-# COMMAND ----------
-
-unzipped_files
-
-# COMMAND ----------
-
-zip_files = zip_ref.namelist()
-
-
-# COMMAND ----------
-
-    # This is commented until we work with the full data
-    # BEWARE THAT NOW WE ARE REMOVING ZIP FILES: IN THE NEXT LINES OF CODE WE SHOULD CHECK FOR FILENAMES NO MATTER IF THEY END WITH .ZIP OR NOT!!!!!!!!!!!!!
-
-
-# copy each file in each header folder, if not already copied
-# in case of zip files: do not copy, extract if not already extracted
-
-for folder, files in file_header_dict.items():
-    print('FOLDER: ' + folder ) # folder 
+# create header folders if they do not exist
+for folder in file_header_dict.keys():
     header_dir = byheader_dir + folder
     try:
         os.mkdir(header_dir)
     except FileExistsError:
         print(f"{folder} directory exists")
 
-    copy = files # initial files to copy
-    if len(copy) > 0:
-        for file in tqdm(copy):
-           
-            destination_file = os.path.join(header_dir, os.path.basename(file))
-          
-            # Check if the file already exists in the destination directory
-            if not os.path.exists(destination_file):
-
-                shutil.copy(file, header_dir) # copy if it does not exist
-                print(f"Copied {file} to {header_dir}")
-            
-   
-# see what we just saved
-for folder, files in file_header_dict.items():
-    print('FOLDER: ' + folder ) # folder 
-    header_dir = byheader_dir + folder
-    f = os.listdir(header_dir)
-    print(len(f))
-    print(files[:1])
 
 # COMMAND ----------
 
-# remove files that do not belong to the folder
+# copy each file in each header folder, if not already copied
+# in case of zip files: do not copy, extract if not already extracted
 
-    # remove = list(set(copied).difference(copy0))   # if one file actually did not belonged to that folder 
-    # print(Files to remove:", len(remove))
-    # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE OF THIS; RUN THE CODE AGAIN FOR 2017 data
-    #if len(remove) > 0:
-    #    for file in remove:
-    #        os.remove(header_dir + "/" + file)
-    #        print('Deleted ' + header_dir + "/" + file)
+for item in tqdm(range(rawfiles_to_header .shape[0])):
+    
+    already_copied = rawfiles_to_header.header_filepath[item] != ""
+    if already_copied:
+        continue
+
+    header_dir      = byheader_dir + rawfiles_to_header .header[item]
+    zipped          = rawfiles_to_header .zipped[item]
+    raw_filepath    = rawfiles_to_header .raw_filepath[item]
+    filename        = rawfiles_to_header .filename[item]
+    
+    if zipped == 1:
+        output_name     = unzip_and_rename(raw_filepath, header_dir)
+        output_filepath = os.path.join(header_dir, output_name) 
+        
+    if zipped == 0:
+        output_name     = filename
+        output_filepath = os.path.join(header_dir, output_name) 
+        if not os.path.exists(output_filepath):
+            shutil.copy(raw_filepath, output_filepath) 
+
+    rawfiles_to_header .header_filepath[item] = output_filepath
 
 
 # COMMAND ----------
 
+# (1) CHECK THAT ALL FILES ARE SAVED IN THE CORRESPONDING FOLDER
+assert sum(rawfiles_to_header .header_filepath == "") == 0
+for filepath in rawfiles_to_header.header_filepath:
+    assert os.path.exists(output_filepath)
 
+# COMMAND ----------
 
-# 
+# (2) REMOVE FILES THAT DO NOT BELONG TO THE FOLDER
+for folder in file_header_dict.keys():
 
+     # CAREFUL; I REMOVED SOME 2017 DATA FROM THEIR FOLDERS ACCIDENTALY BECAUSE I DIDN'T HAVE THE FOLLOWING CONDITION; RUN THE CODE AGAIN FOR 2017 data
+    if folder in ["header_one", "header_two", "header_three", "header_four", "header_five", "header_six", "header_seven"]:
+        continue
 
+    header_dir         = byheader_dir + folder
+    files_in_folder    = os.listdir(header_dir)
+    shouldbe_in_folder = rawfiles_to_header .header_filepath[rawfiles_to_header .header == folder]
+    shouldbe_in_folder = [os.path.basename(f) for f in shouldbe_in_folder]
+
+    remove = list(set(files_in_folder).difference(shouldbe_in_folder))
+    remove = [header_dir + "/" + f for f in remove]
+    print(f"Folder {folder}: remove {len(remove)} files")
+
+    if len(remove) > 0:
+        for file in tqdm(remove):
+            os.remove(file)
+
+# COMMAND ----------
 
 # overwrite delta table
-write_deltalake("tmp/some_delta_lake", df3, mode="overwrite")
+rawfiles_to_header_spark = spark.createDataFrame(rawfiles_to_header)
+rawfiles_to_header_spark.write \
+    .format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(table_name)
