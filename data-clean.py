@@ -5,513 +5,83 @@
 
 # COMMAND ----------
 
-# Pip install non-standard packages
-!pip install rarfile
-!pip install findspark
-!pip install pyspark
-!pip install plotly
-!pip install pyspark_dist_explore
-!pip install geopandas
-!pip install seaborn
-!pip install folium
-!pip install editdistance
-!pip install scikit-mobility
-!pip install chart_studio
-!pip install tqdm
-!pip install pyunpack
-!pip install patool
-
-import shutil
-import sys
-import os
-
+# MAGIC %run ./utils/packages
 
 # COMMAND ----------
 
-# Directories
-V_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/'
-user = 'wbrau@worldbank.org'
-git = f'/Workspace/Users/{user}/ColombiaTransMilenio'
-#git2 = f'/Workspace/Users/{user}/Colombia-BRT_IE-temp/'
-
-## Important sub-directories for this notebook
-raw_dir      =  V_DIR + '/Workspace/Raw/'
-byheader_dir =  V_DIR + '/Workspace/Raw/byheader_dir/'
+# MAGIC %run ./utils/setup
 
 # COMMAND ----------
 
-# MAGIC
-# MAGIC %run ./utils/import_test.py
-# MAGIC %run ./utils/packages.py
-# MAGIC %run ./utils/setup.py
-# MAGIC %run ./utils/utilities.py
-# MAGIC
-# MAGIC
-# MAGIC ## Note that these won't work if there are errors in the code. Make sure first that everything is OK!
-# MAGIC
-# MAGIC # Functions
-# MAGIC import_test_function("Running hola.py works fine :)")
-# MAGIC import_test_packages("Running packages.py works fine :)")
-# MAGIC import_test_setup("Running setup.py works fine :)")
-# MAGIC import_test_utilities("Running utilities.py works fine :)")
-# MAGIC
-# MAGIC # Classes and others
-# MAGIC objects_in_dir = dir()
-# MAGIC print('ImportTestClass'    in objects_in_dir, 
-# MAGIC       'spark_df_handler'   in objects_in_dir,
-# MAGIC       'user_window'        in objects_in_dir)
+# MAGIC %run ./utils/windows
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Things that did not import
-
-# COMMAND ----------
-
-# generate variables
-def generate_variables(df):
-    
-    ## Generate additional variables
-    # Create real balance variable
-    df = df.withColumn('real_balance_after', 
-                                    df['balance_before'] - df['value'])
-    
-    # Create transfer dummy variable
-    df = df.withColumn('transfer',
-                                    F.when(df['value'] < 500, 1).otherwise(0).cast('byte'))
-
-    # Create transfer time variable
-    df = df.withColumn('transfer_time',
-                                    F.when(df['transfer'] == True,
-                                        ( F.unix_timestamp(df['transaction_timestamp'])
-                                        - F.unix_timestamp(F.lag(df['transaction_timestamp'])\
-                                            .over(user_window)))/60).otherwise(0))
-    df = df.withColumn('transfer_time',
-                                    F.when(df['transfer_time'] > 95, 0).otherwise(df['transfer_time']))
-
-    
-    # Time variables
-    df = df.withColumn('year'     , F.year(df['transaction_timestamp']))
-    df = df.withColumn('month'   , F.date_trunc('month', df['transaction_timestamp']))
-    df = df.withColumn('week'   , F.date_trunc('week', df['transaction_timestamp']))
-    df = df.withColumn('dayofweek', F.dayofweek('transaction_timestamp').cast('byte'))
-    df = df.withColumn('day'      , F.date_trunc('day', df['transaction_timestamp']))
-    df = df.withColumn('hour'     , F.hour('transaction_timestamp').cast('byte'))
-    df = df.withColumn('minute'   , F.minute('transaction_timestamp').cast('byte'))
-
-    return df
-    
-def update_dictionaries(df, variable, new_variable):
-    # add new factor levels to dictionary
-    if variable == 'emisor':
-        dictionary = emisor_dict
-    elif variable == 'operator':
-        dictionary = operator_dict
-    elif variable == 'station':
-        dictionary = station_dict
-        dictionary.columns  = ['station', 'count']
-    elif variable == 'line':
-        dictionary = line_dict
-    elif variable == 'account_name':
-        dictionary = account_name_dict  
-
-    new_distinct    = df.select(variable).distinct().cache()
-    old_distinct   = dictionary.reset_index()
-    id_max         = old_distinct[new_variable].max()
-    old_distinct   = spark.createDataFrame(old_distinct)
-    old_distinct   = old_distinct.withColumnRenamed(variable, variable + '_dict')
-    new_dictionary = old_distinct.join(new_distinct, 
-                                        old_distinct[variable + '_dict'] == new_distinct[variable], 
-                                        how = 'outer')
-    new_dictionary = new_dictionary.withColumn(new_variable, 
-                                                F.when(F.isnull(F.col(new_variable)), 
-                                                        F.lit(id_max) + 1).otherwise(F.col(new_variable)))
-    window = Window.orderBy(new_variable)
-    new_dictionary = new_dictionary.withColumn(variable + '_dict', 
-                                                F.when(F.isnull(F.col(variable + '_dict')), 
-                                                        F.col(variable)).otherwise(F.col(variable + '_dict')))
-    new_dictionary = new_dictionary.withColumn(new_variable, 
-                                                F.when(F.isnull(F.col('count')),
-                                                        F.row_number().over(window)-1).otherwise(F.col(new_variable)))
-    #print(new_dictionary.toPandas())
-    new_dictionary = new_dictionary.select(old_distinct.columns[0:])
-    return new_dictionary
-
-def enumerate_factors(df, variable, old_dict = False, return_dict = False):
-    # name for new variable
-    new_variable = variable + '_id'
-    
-    # either re-use old dict and amend new factor levels
-    if old_dict == True:
-        dict_df = update_dictionaries(df, variable, new_variable)
-        #import pdb; pdb.set_trace()
-        df = df.join(dict_df,
-                df[variable] == dict_df[variable + '_dict'],
-                how ='left')
-    
-    # or create new dict
-    elif old_dict == False:
-        indexer = feature.StringIndexer(inputCol=variable, outputCol=new_variable)
-        fitted_indexer = indexer.fit(df)
-        df =fitted_indexer.transform(df)
-
-    # save dictionary
-    if return_dict == True:
-        output_dict = df.groupby(variable, new_variable).count().sort('count', ascending = False)
-  
-      
-    
-    # cast as byte
-    df = df.withColumn(new_variable, df[new_variable].cast('smallint'))
-    
-    # drop factor labels
-    df = df.drop(variable)
-
-    if return_dict == True:
-        return df, output_dict
-    elif return_dict == False:
-        return df
-
-# COMMAND ----------
-
-# setup
-## Just a test to see if importing from the main notebook works
-def import_test_setup(x):
-    print(x)
-
-## Initiate Spark
-## Class to handle spark and df in session
-
-
-## Set up spark
-# Check which computer this is running on
-if multiprocessing.cpu_count() == 6:
-    on_server = False
-else:
-    on_server = True
-
-# start spark session according to computer
-if on_server:
-    spark = SparkSession \
-        .builder \
-        .master("local[75]") \
-        .config("spark.driver.memory", "200g") \
-        .config("spark.sql.session.timeZone", "UTC") \
-        .config('spark.local.dir', '/mnt/DAP/data/ColombiaProject-TransMilenioRawData/Workspace/') \
-        .config("spark.sql.execution.arrow.enabled", "true")\
-        .getOrCreate()
-else:
-    spark = SparkSession.builder.master("local[*]") \
-    .config("spark.driver.maxResultSize", "2g") \
-    .config("spark.sql.shuffle.partitions", "16") \
-    .config("spark.driver.memory", "8g") \
-    .config("spark.sql.session.timeZone", "UTC") \
-    .config("spark.sql.execution.arrow.enabled", "true")\
-    .getOrCreate()
-
-# Set paths
-if on_server:
-    print("OK: ON SERVER")
-    path = '/dbfs/mnt/DAP/data/ColombiaProject-TransMilenioRawData'
-    user = os.listdir('/Workspace/Repos')[0]
-    git = f'/Workspace/Repos/{user}/Colombia-BRT-IE-temp'
-else:
-    print("Not on server - no path defined")
-
-## Class to handle spark and df in session
-
-class spark_df_handler:
-
-    """Class to collect spark connection and catch the df in memory.
-
-    Attributes
-    ----------
-    spark : an initialised spark connection
-    df : a spark dataframe that holds the raw data
-    on_server : whether
-
-    Methods
-    -------
-    load(path, pickle = True)
-        Loads a pickle or csv
-
-    generate_variables()
-        generates additional variables after raw import
-
-    transform()
-
-    memorize(df)
-        Catch the df in memory
-    """
-
-    def __init__(self,
-                spark = spark,
-                on_server = on_server):
-        self.spark = spark
-        self.on_server = on_server
-
-
-    def load(self, 
-             path =  path, 
-             type = 'parquet', 
-             file = 'parquet_df', 
-             delimiter = ';', 
-             encoding = "utf-8"):
-        
-        if type =='parquet':
-            self.df = spark.read.format("parquet").load(os.path.join(path, file)) # changed
-            
-
-        elif type == 'pickle':
-            name = os.path.join(path, file)
-            pickleRdd = self.spark.sparkContext.pickleFile(name = name).collect()
-            self.df = self.spark.createDataFrame(pickleRdd)
-
-
-                
-        elif type =='new_data':
-            self.dfraw = self.spark.read.format("csv").option("header", "true")\
-                                        .option("delimiter", delimiter)\
-                                        .option("charset", encoding)\
-                                            .load(os.path.join(path,"*")) # reads all files in the path
-
-        else:
-            self.dfraw = self.spark.read.format("csv").option("header", "true")\
-                                        .option("delimiter", ";")\
-                                        .option("charset", "utf-8")\
-                                        .load(path) # changed -- reads all files in the path
-
-        
-
-            #self.clean()
-            #self.gen_vars()
-            
-    def transform(self, header_format):
-        if header_format == 'format_one':
-            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyyMMddHHmmss')\
-                            .alias('transaction_timestamp'),
-                            self.dfraw['Emisor'].alias('emisor'),
-                            self.dfraw['Operador'].alias('operator'),
-                            self.dfraw['Linea'].alias('line'),
-                            self.dfraw['Estacion'].alias('station'),
-                            self.dfraw['Acceso de Estación'].alias('station_access'),
-                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
-                            self.dfraw['Nombre de Perfil'].alias('account_name'),
-                            self.dfraw['Numero de Tarjeta'].cast('long').alias('cardnumber'),
-                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
-                            .alias('balance_before'),
-                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
-                            .alias('balance_after'))
-
-        elif header_format == 'format_two':
-            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Uso'],'dd-MM-yyyy HH:mm:ss')\
-                            .alias('transaction_timestamp'),
-                            self.dfraw['Emisor'].alias('emisor'),
-                            self.dfraw['Operador'].alias('operator'),
-                            self.dfraw['Línea'].alias('line'),
-                            self.dfraw['Estación'].alias('station'),
-                            self.dfraw['Acceso de Estación'].alias('station_access'),
-                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
-                            self.dfraw['Nombre de Perfil'].alias('account_name'),
-                            self.dfraw['Número de Tarjeta'].cast('long').alias('cardnumber'),
-                            F.trim(self.dfraw['Saldo Previo a Transacción']).cast('int')\
-                            .alias('balance_before'),
-                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                            F.trim(self.dfraw['Saldo Después de Transacción']).cast('int')\
-                            .alias('balance_after'))
-            
-        elif header_format == 'format_three':
-            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyy/MM/dd HH:mm:ss')\
-                            .alias('transaction_timestamp'),
-                            self.dfraw['Emisor'].alias('emisor'),
-                            self.dfraw['Operador'].alias('operator'),
-                            self.dfraw['Linea'].alias('line'),
-                            self.dfraw['Parada'].alias('station'),
-                            self.dfraw['Parada'].alias('station_access'),
-                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                            self.dfraw['Tipo Tarjeta'].alias('card_type'),
-                            self.dfraw['Nombre de Perfil'].alias('account_name'),
-                            F.trim(self.dfraw['Numero Tarjeta']).cast('long').alias('cardnumber'),
-                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
-                            .alias('balance_before'),
-                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
-                            .alias('balance_after'))
-            
-        elif header_format == 'format_four':
-            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Transaccion'],'yyyyMMddHHmmss')\
-                            .alias('transaction_timestamp'),
-                            self.dfraw['Emisor'].alias('emisor'),
-                            self.dfraw['Operador'].alias('operator'),
-                            self.dfraw['Linea'].alias('line'),
-                            self.dfraw['Parada'].alias('station'),
-                            self.dfraw['Parada'].alias('station_access'),
-                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                            self.dfraw['Tipo Tarjeta'].alias('card_type'),
-                            self.dfraw['Nombre de Perfil'].alias('account_name'),
-                            F.trim(self.dfraw['Numero Tarjeta']).cast('long').alias('cardnumber'),
-                            F.trim(self.dfraw['Saldo Previo a Transaccion']).cast('int')\
-                            .alias('balance_before'),
-                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                            F.trim(self.dfraw['Saldo Despues de Transaccion']).cast('int')\
-                            .alias('balance_after'))
-            
-        elif header_format == 'format_five':
-            self.df = self.dfraw.select(F.to_timestamp(self.dfraw['Fecha de Uso'],'dd-MM-yyyy HH:mm:ss')\
-                            .alias('transaction_timestamp'),
-                            self.dfraw['Emisor'].alias('emisor'),
-                            self.dfraw['Operador'].alias('operator'),
-                            self.dfraw['Línea'].alias('line'),
-                            self.dfraw['Parada'].alias('station'),
-                            self.dfraw['Parada'].alias('station_access'),
-                            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                            self.dfraw['Tipo de Tarjeta'].alias('card_type'),
-                            self.dfraw['Nombre de Perfil'].alias('account_name'),
-                            self.dfraw['Número de Tarjeta'].cast('long').alias('cardnumber'),
-                            F.trim(self.dfraw['Saldo Previo a Transacción']).cast('int')\
-                            .alias('balance_before'),
-                            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                            F.trim(self.dfraw['Saldo Después de Transacción']).cast('int')\
-                            .alias('balance_after'))
-            
-            # new formats Wendy  
-
-
-            ## this goes with header_08, header_09, header_10, header_15
-        elif header_format == 'format_6':
-            self.df = self.dfraw.select( 
-                F.to_timestamp( F.regexp_replace(self.dfraw['Fecha_Transaccion'], ' UTC', ''),
-                                'yyyy-MM-dd HH:mm:ss').alias('transaction_timestamp'),
-            self.dfraw['Emisor'].alias('emisor'),
-            self.dfraw['Operador'].alias('operator'),
-            self.dfraw['Linea'].alias('line'),
-            self.dfraw['Estacion_Parada'].alias('station'),
-            self.dfraw['Estacion_Parada'].alias('station_access'),
-            self.dfraw['Dispositivo'].cast('int').alias('machine'),
-            self.dfraw['Tipo_Tarjeta'].alias('card_type'),
-            self.dfraw['Nombre_Perfil'].alias('account_name'),
-            self.dfraw['Numero_Tarjeta'].alias('cardnumber'),
-            F.trim(self.dfraw['Saldo_Previo_a_Transaccion']).cast('int')\
-                .alias('balance_before'),
-            F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-            F.trim(self.dfraw['Saldo_Despues_Transaccion']).cast('int')\
-                .alias('balance_after'),
-            self.dfraw['Sistema'].alias('system'))
-            
-            ## this goes with header_11, header_12, header_13, header_14
-        elif header_format == 'format_7':
-                self.df = self.dfraw.select( 
-                    F.to_timestamp( F.regexp_replace(self.dfraw['Fecha_Transaccion'], ' UTC', ''),
-                    'yyyy-MM-dd HH:mm:ss').alias('transaction_timestamp'),
-                self.dfraw['Emisor'].alias('emisor'),
-                self.dfraw['Operador'].alias('operator'),
-                self.dfraw['Linea'].alias('line'),
-                self.dfraw['Estacion_Parada'].alias('station'),
-                self.dfraw['Acceso_Estacion'].alias('station_access'),
-                self.dfraw['Dispositivo'].cast('int').alias('machine'),
-                self.dfraw['Tipo_Tarjeta'].alias('card_type'),
-                self.dfraw['Nombre_Perfil'].alias('account_name'),
-                self.dfraw['Numero_Tarjeta'].alias('cardnumber'),
-                F.trim(self.dfraw['Saldo_Previo_a_Transaccion']).cast('int')\
-                    .alias('balance_before'),
-                F.trim(self.dfraw['Valor']).cast('int').alias('value'),
-                F.trim(self.dfraw['Saldo_Despues_Transaccion']).cast('int')\
-                    .alias('balance_after'),
-                self.dfraw['Sistema'].alias('system'))
-
-    def memorize(self):
-        # Register as table to run SQL queries
-        self.df.createOrReplaceTempView("df_table")
-        self.spark.sql('CACHE TABLE df_table').collect()
-
-        return self.df
-    
-
-
-
-# COMMAND ----------
-
-
-## utilities
-
-# First, we create a few windows
-# window by cardnumber
-user_window = Window\
-    .partitionBy('cardnumber').orderBy('transaction_timestamp')
-    
-# window  by cardnumber, explicity unbounded (should be same as above, but to be sure)
-user_window_unbounded = Window\
-    .partitionBy('cardnumber')\
-    .orderBy('transaction_timestamp') \
-    .rangeBetween(Window.unboundedPreceding, Window.unboundedFollowing)
-
-# user day window
-user_day_window = Window\
-    .partitionBy('cardnumber', 'day').orderBy('transaction_timestamp')
-
-# user day window starting from last day
-user_day_window_rev = Window\
-    .partitionBy('cardnumber', 'day').orderBy(F.desc('transaction_timestamp'))
-
-# user week window
-user_week_window = Window\
-    .partitionBy('cardnumber', 'week').orderBy('transaction_timestamp')
-
-# user week window starting from last day
-user_week_window_rev = Window\
-    .partitionBy('cardnumber', 'week').orderBy(F.desc('transaction_timestamp'))
-
-# user month window
-user_month_window = Window\
-    .partitionBy('cardnumber', 'month').orderBy('transaction_timestamp')
-
-# user month window starting with last month
-user_month_window_rev = Window\
-    .partitionBy('cardnumber', 'month').orderBy(F.desc('transaction_timestamp'))
-
-# function to convert days to secs
-days = lambda i: i * 86400
-
-# rolling month window
-rolling_month_window = Window.orderBy(F.col('timestamp'))\
-    .rangeBetween(-days(28), Window.currentRow)
-
-# rolling month window, rev
-rolling_month_window = Window.orderBy(F.desc('timestamp'))\
-    .rangeBetween(Window.currentRow, days(28))
-
-# rolling user month window
-rolling_user_month_window = Window.partitionBy('cardnumber')\
-    .orderBy(F.col('timestamp'))\
-    .rangeBetween(-days(28), Window.currentRow)
-
-# rolling user month window, starting with last month
-rolling_user_month_window_rev = Window.partitionBy('cardnumber')\
-    .orderBy(F.desc('timestamp'))\
-    .rangeBetween(Window.currentRow, days(28))
-
-
+# MAGIC %run ./utils/generate_variables
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC # (1) Create raw parquet files
-# MAGIC <mark> With data since 2020 so far </mark>
+# MAGIC <mark> So far: data since 2020 </mark>
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ### 1.2 Unify structure
-# MAGIC
-# MAGIC This section can be run independently from (1.1)
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS tm_bronze (
+# MAGIC   transaction_timestamp TIMESTAMP,    -- up to seconds
+# MAGIC   emisor                STRING,       
+# MAGIC   operator              STRING,
+# MAGIC   line                  STRING,
+# MAGIC   station_or_stop       STRING,
+# MAGIC   station_access        STRING,
+# MAGIC   device                STRING,
+# MAGIC   card_type             STRING,
+# MAGIC   card_profile          STRING,
+# MAGIC   cardnumber            STRING,
+# MAGIC   balance_before        INT,
+# MAGIC   value                 INT,
+# MAGIC   balance_after         INT,
+# MAGIC   system                STRING,
+# MAGIC   input_file            STRING
+# MAGIC )
+# MAGIC USING DELTA
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC #### 1.2.a. Importing based on different schemata
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS bronze_raw_staging (
+# MAGIC   input_file   STRING
+# MAGIC )
+# MAGIC USING DELTA;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC COPY INTO bronze_raw_staging
+# MAGIC FROM (
+# MAGIC   SELECT *,
+# MAGIC   _metadata.file_path AS input_file 
+# MAGIC   FROM '/Volumes/prd_csc_mega/sColom15/vColom15//Workspace/Raw/byheader_dir/'
+# MAGIC   )
+# MAGIC FILEFORMAT = CSV
+# MAGIC PATTERN = '*'
+# MAGIC FORMAT_OPTIONS (
+# MAGIC   'header' = 'true',
+# MAGIC   'encoding' = 'ISO-8859-1',
+# MAGIC   'allowQuotedNewLines'  = 'true',
+# MAGIC   'recursiveFileLookup'  = 'true' ,
+# MAGIC   'mergeSchema' = 'true',
+# MAGIC   'inferSchema' = 'true'
+# MAGIC )
+# MAGIC COPY_OPTIONS ('mergeSchema' = 'true');
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT *
+# MAGIC FROM bronze_raw_staging
+# MAGIC LIMIT 20;
 
 # COMMAND ----------
 
