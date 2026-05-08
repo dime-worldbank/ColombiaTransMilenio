@@ -61,7 +61,7 @@ for blob in tqdm(blobs):
 
 print(f'not found: {notfound} files')
 
-assert notfound < len(blobs) * 0.1, 'Too many files not found
+assert notfound < len(blobs) * 0.1, 'Too many files not found'
 
 # COMMAND ----------
 
