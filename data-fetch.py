@@ -38,6 +38,9 @@ storage_client = storage.Client.create_anonymous_client()
 
 blobs = storage_client.list_blobs(bucket_name)
 # blobs includes files in nested folders
+print(f'downloading to: {DATA_DIR}')
+
+notfound = 0       
 for blob in tqdm(blobs):
     # skip folders
     if blob.name.endswith("/"):
@@ -47,8 +50,18 @@ for blob in tqdm(blobs):
     # Only download files that are not yet downloaded
     if not dbfs_file_exists(target):
         dbutils.fs.mkdirs(str(Path(target).parent))
-        print(f'downloading to: {target}')
-        blob.download_to_filename(filename=target, client=storage_client)
+        try:
+            blob.download_to_filename(filename=target, client=storage_client)
+            print(f'Downloaded: {blob.name}')
+        
+        except NotFound:
+            print(f'Skipping (could not found): {blob.name}')
+            notfound +=1
+            continue
+
+print(f'not found: {notfound} files')
+
+assert notfound < len(blobs) * 0.1, 'Too many files not found
 
 # COMMAND ----------
 
