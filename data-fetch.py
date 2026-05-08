@@ -37,6 +37,8 @@ bucket_name = 'validaciones_tmsa'
 storage_client = storage.Client.create_anonymous_client()
 
 blobs = storage_client.list_blobs(bucket_name)
+tot_blobs = len(list(blobs))
+
 # blobs includes files in nested folders
 print(f'downloading to: {DATA_DIR}')
 
@@ -61,7 +63,8 @@ for blob in tqdm(blobs):
 
 print(f'not found: {notfound} files')
 
-assert notfound < len(blobs) * 0.1, 'Too many files not found'
+if tot_blobs > 0:
+    assert notfound < tot_blobs * 0.1, 'Too many files not found'
 
 # COMMAND ----------
 
