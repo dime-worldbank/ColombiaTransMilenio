@@ -36,14 +36,14 @@ def dbfs_file_exists(path):
 bucket_name = 'validaciones_tmsa'
 storage_client = storage.Client.create_anonymous_client()
 
-blobs = storage_client.list_blobs(bucket_name)
-tot_blobs = len(list(blobs))
+blobs = list(storage_client.list_blobs(bucket_name))
+tot_blobs = len(blobs)
 
 # blobs includes files in nested folders
 print(f'downloading to: {DATA_DIR}')
 
 notfound = 0       
-for blob in tqdm(blobs):
+for blob in tqdm(blobs, total=tot_blobs):
     # skip folders
     if blob.name.endswith("/"):
         continue
