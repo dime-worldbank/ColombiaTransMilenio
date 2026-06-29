@@ -60,14 +60,14 @@ Classical file storage (~0.7 TB). Data moves through stages:
 │   │   └── apoyo_subsidy_cards_May24.csv, transactions_2025_until2025-04-26.csv
 │   ├── Clean/                    ⚠️ TO REMOVE — contains only timing-old-cleaning/ subfolder
 │   │                             Legacy timing tests from old loop-through-files cleaning approach
-│   └── bogota-hdfs/              Parquet files from old pipeline — since 2020 validaciones only, no recharges, no 2016–2019
-│       ├── parquet_df_raw_2020-2024_withdups   ~4.37B rows, raw with duplicates (since2020)
-│       ├── df_clean_relevant                   Cleaned & filtered for relevant cards (Dec 2019–Oct 2024, ~3.45B rows, alphanumeric cards)
-│       ├── df_clean_relevant_sample1           1% sample of df_clean_relevant
-│       ├── df_clean_relevant_sample10          10% sample of df_clean_relevant
-│       ├── parquet_df_clean_2020-2024_temp     Partial/temp run of the clean parquet
-│       ├── intermediate/                       Analysis subfolders: superswipers, regular-users-2022-2024, usage_count_day, card_types
-│       └── sample-will/                       validaciones + treatment vars (lost_subsidy_year, left_in_april, october_user) — NOT recharges
+│   └── bogota-hdfs/              Parquet files from old pipeline — validaciones only, no recharges
+│       ├── parquet_df_raw_2020-2024_withdups   ✅ since2020 confirmed — ~4.37B rows, raw with duplicates
+│       ├── df_clean_relevant                   ✅ since2020 confirmed — cleaned & filtered for relevant cards (Dec 2019–Oct 2024, ~3.45B rows, alphanumeric cards)
+│       ├── df_clean_relevant_sample1           ✅ since2020 confirmed — 1% sample of df_clean_relevant
+│       ├── df_clean_relevant_sample10          ✅ since2020 confirmed — 10% sample of df_clean_relevant
+│       ├── parquet_df_clean_2020-2024_temp     ✅ since2020 confirmed (by name) — partial/temp run
+│       ├── intermediate/                       ✅ since2020 confirmed — card-level aggregates (superswipers, freq, usage_count_day, regular-users-2022-2024)
+│       └── sample-will/                        ✅ confirmed 2016–2019 — Aug 2017–May 2018, numeric card IDs; validaciones + treatment vars; produced outside data-clean
 │
 └── file_to_header/               ⚠️ Legacy folder (can be removed)
 ```
@@ -215,9 +215,9 @@ All tasks use Git source (`github.com/dime-worldbank/ColombiaTransMilenio`, bran
 
 ## Status of 2016–2019 Validaciones Data
 
-**Has any processing been done beyond organizing files?** 
+**Has any processing been done beyond organizing files?**
 
-**No.** The 2016–2019 validaciones data has only been:
+**Validaciones: No.** The 2016–2019 validaciones data has only been:
 - ✅ Moved from `/Documents/2016data`...`2019data` to `/Workspace/Raw/from2016to2019/` (by `data-organize-fromDocuments`)
 
 What has NOT been done:
@@ -225,7 +225,9 @@ What has NOT been done:
 - ⬜ Bronze table creation
 - ⬜ Any cleaning or analysis
 
-**Note:** The only 2016–2019 data that WAS processed further is **recharges** (not validaciones) — the `recharges-clean-and-sample` notebook loaded 2017–2019 recharges into `recargas_2017to2019_raw` Delta table.
+**Recharges: partially.** The `recharges-clean-and-sample` notebook loaded 2017–2019 recharges into `recargas_2017to2019_raw` Delta table.
+
+**Validaciones (bogota-hdfs/sample-will): yes, partially.** `sample-will/` contains Aug 2017–May 2018 validaciones with numeric card IDs, joined with treatment variables. This is the only known prior processing of 2016–2019 validaciones — done ad hoc by Will, outside the main pipeline.
 
 ### Known challenges for 2016–2019 data:
 - Mixed file formats: csv, txt, xls, xlsx, gz archives, zip files
