@@ -78,6 +78,7 @@ print(f"Already classified: {len(rawfiles_to_header)} files")
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 8
 # Parameters
 # Old list of headers by Sebastian for 2016-2017 data:  letters (one - seven)
 # New list of headers by Wendy for data since 2020: numbers (since 8)
@@ -118,7 +119,8 @@ unique_header_dict = {'header_one':
 broken_files = ["validacionDual20230630.csv",
                 "validacionTroncal20200725.csv",
                 "validacionZonal20200601.csv",
-                "validacionZonal20220628.csv"]
+                "validacionZonal20220628.csv",
+                "validacionTroncal20260507.zip"]  # not a real zip file
 
 
 
@@ -163,16 +165,28 @@ if n_to_classify > 0:
     assert len(old_and_new_raw_filepaths) == len(set(old_and_new_raw_filepaths)), "Duplicate raw filepaths detected!"
 
     # Detect headers by reading first row of each file
+    import io
+    detected_as_zip = set()  # files confirmed zip-compressed via magic bytes
     headers = []
     skipped_files = []
     for f in tqdm(not_classified_not_broken):
         try:
-            enc = detect_encoding(f)
-            if enc is None or enc.lower() == "unknown":
-                enc = "latin-1"
-            with open(f, encoding=enc) as fin:
-                csvin = csv.reader(fin)
-                headers.append(next(csvin, []))
+            with open(f, 'rb') as fb:
+                is_zip = fb.read(2) == b'PK'
+            if is_zip:
+                detected_as_zip.add(f)
+                with zipfile.ZipFile(f, 'r') as zf:
+                    inner_name = zf.namelist()[0]
+                    with zf.open(inner_name) as inner_file:
+                        csvin = csv.reader(io.TextIOWrapper(inner_file, encoding='latin-1'))
+                        headers.append(next(csvin, []))
+            else:
+                enc = detect_encoding(f)
+                if enc is None or enc.lower() == "unknown":
+                    enc = "latin-1"
+                with open(f, encoding=enc) as fin:
+                    csvin = csv.reader(fin)
+                    headers.append(next(csvin, []))
         except:
             try:
                 csvin = pd.read_csv(f, nrows=0)  # handles zip files
@@ -186,6 +200,10 @@ if n_to_classify > 0:
         not_classified_not_broken = [f for f in not_classified_not_broken if f not in skipped_files]
         print(f"Skipped {len(skipped_files)} unreadable files")
 
+    # Normalize headers: replace empty/BOM columns with 'Unnamed: N' (matches pandas read_csv)
+    headers = [[f'Unnamed: {i}' if col.strip('\ufeff') == '' else col.strip('\ufeff')
+                for i, col in enumerate(h)] for h in headers]
+
     # See how many unique headers we found
     seed(510)
     unique_headers = list(set(tuple(x) for x in headers)) 
@@ -196,9 +214,26 @@ if n_to_classify > 0:
         print(sum([h == list(head) for h in headers]), "files")
         print(head)
 
-    # Assert all detected headers are in our known dictionary
-    for val in unique_headers: 
-        assert list(val) in list(unique_header_dict.values()), f"{val} not in unique_header_dict"
+    # Check all detected headers are in our known dictionary
+    unknown_headers = [val for val in unique_headers if list(val) not in list(unique_header_dict.values())]
+    if unknown_headers:
+        # Auto-compute next sequential key (e.g. header_17)
+        num_keys = [int(k[7:]) for k in unique_header_dict if k.startswith('header_') and k[7:].isdigit()]
+        next_num = max(num_keys, default=0) + 1
+
+        sep = '=' * 64
+        msg = f"\n{sep}\n  {len(unknown_headers)} NEW HEADER(S) DETECTED — ACTION REQUIRED\n{sep}\n"
+        for i, h in enumerate(unknown_headers):
+            key = f"header_{next_num + i:02d}"
+            examples = [os.path.basename(f) for f, hdr in zip(not_classified_not_broken, headers)
+                        if hdr == list(h)][:3]
+            msg += f"\nStep 1a — add to unique_header_dict in Cell 8:\n"
+            msg += f"  '{key}':\n      {list(h)},\n"
+            msg += f"  ({len([f for f, hdr in zip(not_classified_not_broken, headers) if hdr == list(h)])} file(s), e.g. {examples[0]})\n"
+        msg += f"\nStep 1b — add a transform_{next_num:02d}() method in utils/handle_files (loaded by Cell 3)\n"
+        msg += f"Step 2  — re-run from Cell 8\n"
+        msg += sep
+        raise AssertionError(msg)
 
     assert len(not_classified_not_broken) == len(headers)
 
@@ -210,6 +245,9 @@ if n_to_classify > 0:
                 file_header_dict_inv[file] = key
                 break  
 
+    unmatched = [f for f in not_classified_not_broken if f not in file_header_dict_inv]
+    assert not unmatched, f"{len(unmatched)} files had no header match:\n" + "\n".join(os.path.basename(f) for f in unmatched[:10])
+
     # Summary of files per header
     from collections import Counter
     header_counts = Counter(file_header_dict_inv.values())
@@ -220,16 +258,27 @@ if n_to_classify > 0:
     file_to_header_df = pd.DataFrame({"raw_filepath": not_classified_not_broken})
     file_to_header_df["header"] = file_to_header_df.raw_filepath.map(file_header_dict_inv)
     file_to_header_df["source_period"] = "since2020"
-    file_to_header_df["zipped"] = [int(f.endswith('.zip')) for f in file_to_header_df.raw_filepath]
+    file_to_header_df["zipped"] = [int(f.endswith('.zip') or f in detected_as_zip) for f in file_to_header_df.raw_filepath]
 
     # Validate: every file got a header assigned
     assert file_to_header_df.header.isin(unique_header_dict.keys()).all(), "Some files have no header match!"
+    assert file_to_header_df.header.notna().all(), "Null headers found — check file_header_dict_inv"
 
     # Validate: each zip file contains exactly one file (needed for ingestion)
     zip_files = file_to_header_df[file_to_header_df.zipped == 1]
+    bad_zips = []
     for zip_path in tqdm(zip_files.raw_filepath, desc="Checking zips"):
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            assert len(zip_ref.namelist()) == 1, f"Zip {zip_path} has multiple files!"
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                n = len(zip_ref.namelist())
+                if n != 1:
+                    print(f"WARNING multi-file zip ({n} files): {os.path.basename(zip_path)}")
+                    bad_zips.append(zip_path)
+        except zipfile.BadZipFile:
+            print(f"WARNING not a real zip: {os.path.basename(zip_path)}")
+            bad_zips.append(zip_path)
+    if bad_zips:
+        print(f"\n{len(bad_zips)} problematic .zip file(s) — add to broken_files in Cell 8 if needed")
 
     # Append new classifications to existing table
     rawfiles_to_header = pd.concat([rawfiles_to_header, file_to_header_df], axis=0).drop_duplicates(subset=["raw_filepath"]).reset_index(drop=True)
@@ -238,6 +287,119 @@ if n_to_classify > 0:
 else:
     print("No new files to classify.")
 
+
+# COMMAND ----------
+
+# DBTITLE 1,Patch zip .csv headers & classify
+# PATCH: One-time recovery cell for sessions where Cell 11 ran WITHOUT the zip fix.
+# AUTO-SKIPS when Cell 11 ran correctly (no PK-byte headers present).
+# Safe to leave in the notebook — it is a no-op on clean Monday runs.
+import io
+
+def _is_pk_header(h):
+    return bool(h) and isinstance(h[0], str) and h[0].startswith('PK\x03\x04')
+
+def _normalize_header(h):
+    return [f'Unnamed: {i}' if col.strip('\ufeff') == '' else col.strip('\ufeff')
+            for i, col in enumerate(h)]
+
+_needs_patch = 'headers' in dir() and any(_is_pk_header(tuple(h)) for h in headers)
+
+if not _needs_patch:
+    print("Cell 11 ran cleanly — patch not needed. Skipping.")
+else:
+    assert len(headers) == len(not_classified_not_broken), \
+        "Length mismatch – re-run Cell 11 to rebuild headers"
+
+# -- 1. Re-read only the PK-byte files ------------------------------------
+pk_indices = [i for i, h in enumerate(headers) if _is_pk_header(tuple(h))]
+print(f"ZIP .csv files to patch: {len(pk_indices)}")
+
+newly_failed_idx = []
+for i in tqdm(pk_indices, desc="Patching zip .csv headers"):
+    f = not_classified_not_broken[i]
+    try:
+        with zipfile.ZipFile(f, 'r') as zf:
+            inner = zf.namelist()[0]
+            with zf.open(inner) as fh:
+                headers[i] = next(csv.reader(io.TextIOWrapper(fh, encoding='latin-1')), [])
+    except Exception as e:
+        print(f"FAILED {os.path.basename(f)}: {e}")
+        newly_failed_idx.append(i)
+
+    # Drop unreadable files (reverse order to preserve indices)
+    for i in sorted(newly_failed_idx, reverse=True):
+        headers.pop(i)
+        not_classified_not_broken.pop(i)
+
+    still_pk = sum(1 for h in headers if _is_pk_header(tuple(h)))
+    print(f"Done. Remaining PK-byte headers: {still_pk}")
+    # NOTE: .csv files that are actually zip-compressed get zipped=0 (extension-based).
+
+    # -- 1b. Normalize headers ------------------------------------------------
+    headers = [_normalize_header(h) for h in headers]
+
+    detected_as_zip = {not_classified_not_broken[i] for i in pk_indices}
+
+    # -- 2. Classification (mirrors Cell 11 post-loop section) ----------------
+    seed(510)
+    unique_headers = list(set(tuple(x) for x in headers))
+    print(f'\nUnique headers found: {len(unique_headers)}')
+    for x in range(len(unique_headers)):
+        head = unique_headers[x]
+        print('----------------')
+        print(sum(h == list(head) for h in headers), "files")
+        print(head)
+
+    for val in unique_headers:
+        assert list(val) in list(unique_header_dict.values()), f"{val} not in unique_header_dict"
+
+    assert len(not_classified_not_broken) == len(headers)
+
+    file_header_dict_inv = {}
+    for file, header in zip(not_classified_not_broken, headers):
+        for key, value in unique_header_dict.items():
+            if header == value:
+                file_header_dict_inv[file] = key
+                break
+
+    from collections import Counter
+    header_counts = Counter(file_header_dict_inv.values())
+    for key, cnt in sorted(header_counts.items()):
+        print(f"{key}: {cnt}")
+
+    file_to_header_df = pd.DataFrame({"raw_filepath": not_classified_not_broken})
+    file_to_header_df["header"] = file_to_header_df.raw_filepath.map(file_header_dict_inv)
+    file_to_header_df["source_period"] = "since2020"
+    file_to_header_df["zipped"] = [int(f.endswith('.zip') or f in detected_as_zip) for f in file_to_header_df.raw_filepath]
+
+    assert file_to_header_df.header.isin(unique_header_dict.keys()).all(), "Some files have no header match!"
+
+    zip_files_explicit = file_to_header_df[file_to_header_df.zipped == 1]
+    bad_zips = []
+    for zip_path in tqdm(zip_files_explicit.raw_filepath, desc="Checking .zip files"):
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                n = len(zip_ref.namelist())
+                if n != 1:
+                    print(f"WARNING multi-file zip ({n} files): {os.path.basename(zip_path)}")
+                    bad_zips.append(zip_path)
+        except zipfile.BadZipFile:
+            print(f"WARNING not a real zip: {os.path.basename(zip_path)}")
+            bad_zips.append(zip_path)
+    if bad_zips:
+        print(f"\n{len(bad_zips)} problematic .zip file(s) — add to broken_files in Cell 8 if needed")
+
+    rawfiles_to_header = pd.concat([rawfiles_to_header, file_to_header_df], axis=0) \
+file_to_header_df:pandas.core.frame.DataFrame = [raw_filepath: object, header: object ... 2 more fields]
+zip_files_explicit:pandas.core.frame.DataFrame = [raw_filepath: object, header: object ... 2 more fields]
+rawfiles_to_header:pandas.core.frame.DataFrame = [raw_filepath: object, header: object ... 2 more fields]
+ZIP .csv files to patch: 0
+Patching zip .csv headers: 0it [00:00, ?it/s]Done. Remaining PK-byte headers: 0
+
+Unique headers found: 9$0
+        .drop_duplicates(subset=["raw_filepath"]).reset_index(drop=True)
+    print(f"\nTotal classified files: {len(rawfiles_to_header)}")
 
 # COMMAND ----------
 
