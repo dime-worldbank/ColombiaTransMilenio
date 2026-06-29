@@ -2,12 +2,17 @@
 
 ## Data structure
 
-**VOLUMES** 
-* Ingestion + fetching
-* Unique raw folder
-* Folders by header
+**VOLUMES** ('classical' storage of files in multiple formats)
+* Here is where data is stored in the first place
+* We organize data in 3 stages 
+  * Original entry points: 
+      * Ingestion point (/Documents, for data we had saved in OneDrive before)
+      * Fetching point (/Data, for data we periodically download from TM public API)
+  * Workspace/Raw that reorganizes data 
+    * Recharges
+    * Validaciones (TO ADD)
 
-**DELTA TABLES**
+**DELTA TABLES** (tables )
 * file_to_header:
 * tm_bronze:
 * bronze_raw_staging: auxiliar table to incrementally load files into tm_bronze using COPY INTO functionality.  
