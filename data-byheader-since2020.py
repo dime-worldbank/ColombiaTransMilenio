@@ -164,15 +164,27 @@ if n_to_classify > 0:
 
     # Detect headers by reading first row of each file
     headers = []
+    skipped_files = []
     for f in tqdm(not_classified_not_broken):
         try:
             enc = detect_encoding(f)
+            if enc is None or enc.lower() == "unknown":
+                enc = "latin-1"
             with open(f, encoding=enc) as fin:
                 csvin = csv.reader(fin)
                 headers.append(next(csvin, []))
         except:
-            csvin = pd.read_csv(f, nrows=0)  # handles zip files
-            headers.append(list(csvin.columns))
+            try:
+                csvin = pd.read_csv(f, nrows=0)  # handles zip files
+                headers.append(list(csvin.columns))
+            except:
+                print(f"WARNING: skipping unreadable file: {os.path.basename(f)}")
+                skipped_files.append(f)
+
+    # Remove skipped files from classification list
+    if skipped_files:
+        not_classified_not_broken = [f for f in not_classified_not_broken if f not in skipped_files]
+        print(f"Skipped {len(skipped_files)} unreadable files")
 
     # See how many unique headers we found
     seed(510)
@@ -226,6 +238,38 @@ if n_to_classify > 0:
 else:
     print("No new files to classify.")
 
+
+# COMMAND ----------
+
+# DBTITLE 1,Add broken files with header=broken
+# Add broken files to the classification table with header = "broken"
+# This includes: (1) pre-known broken files from Cell 8, (2) newly discovered skipped files from Cell 11
+
+# Resolve known broken_files basenames to full paths
+known_broken_fullpaths = [f for f in all_raw_filepaths if os.path.basename(f) in broken_files]
+
+# Combine with any newly skipped files from Cell 11
+all_broken = known_broken_fullpaths + (skipped_files if 'skipped_files' in dir() else [])
+
+# Remove any that are already in the table (in case of re-runs)
+already_recorded = set(rawfiles_to_header.raw_filepath)
+all_broken = [f for f in all_broken if f not in already_recorded]
+
+if all_broken:
+    broken_df = pd.DataFrame({
+        "raw_filepath": all_broken,
+        "header": "broken",
+        "source_period": "since2020",
+        "zipped": [int(f.endswith('.zip')) for f in all_broken]
+    })
+    rawfiles_to_header = pd.concat([rawfiles_to_header, broken_df], axis=0).drop_duplicates(subset=["raw_filepath"]).reset_index(drop=True)
+    print(f"Added {len(all_broken)} broken files to classification table")
+    for f in all_broken:
+        print(f"  - {os.path.basename(f)}")
+else:
+    print("No broken files to add (already recorded or none found)")
+
+print(f"\nTotal records (classified + broken): {len(rawfiles_to_header)}")
 
 # COMMAND ----------
 
