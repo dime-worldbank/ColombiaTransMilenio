@@ -105,7 +105,7 @@ Classical file storage (~0.7 TB). Data moves through stages:
 | `data-fetch` | Downloads newest data from TM GCloud API to `/Data/` | Mondays (job) | ✅ Active |
 | `data-organize-fromDocuments` | Moves old data from `/Documents/` to `/Workspace/Raw/` | Ran once | ✅ Done |
 | `data-organize-fromData` | Moves new downloads from `/Data/` to `/Workspace/Raw/since2020/` | Mondays (job) | ✅ Active |
-| `data-byheader-since2020` | Classifies files by header → `file_to_header_since2020` table (no file copying) | Mondays (job) | ✅ Active (refactored June 2026) |
+| `data-byheader-since2020` | Classifies files by header → `file_to_header_since2020` table (no file copying) | Mondays (job) | ✅ Active (refactored June 2026) ⚠️ check whether other import parameters need to be added to the table |
 | `data-ingest-bronze` | Reads files by header group, applies column mapping, writes to `bronze_since2020` Delta table | To be created | ⬜ TODO |
 | `data-clean` | Old: imports CSVs → transforms → unions → dedup → parquet. New role: bronze→silver only | To be refactored | ⚠️ Partially obsolete, to refactor |
 
@@ -176,7 +176,7 @@ The old workflow mixed ingestion, cleaning, sampling, and analysis into a tightl
 8. **`plot`** → monthly time series of validaciones by treatment group
 
 **Problems with old workflow:**
-- Physical file duplication in `/byheader_dir/` (wastes 0.7 TB)
+- Physical file duplication in `/byheader_dir/` 
 - No Delta tables — everything in parquet files without versioning or incrementality
 - Cleaning and ingestion conflated in one notebook
 - Not incremental — full reprocessing on every run
@@ -191,16 +191,16 @@ Medallion architecture with Delta tables:
 
 ### Since 2020
 
-1. **`data-fetch`** → downloads from TM API to `/Data/` _(weekly, automated)_
-2. **`data-organize-fromData`** → moves to `/Workspace/Raw/since2020/` _(weekly, automated)_
-3. **`data-byheader-since2020`** → classifies files by header, records in `file_to_header_since2020` Delta table. No file copying. _(weekly, automated)_
+1. ✅ **`data-fetch`** → downloads from TM API to `/Data/` _(weekly, automated)_
+2. ✅ **`data-organize-fromData`** → moves to `/Workspace/Raw/since2020/` _(weekly, automated)_
+3. ✅ **`data-byheader-since2020`** → classifies files by header, records in `file_to_header_since2020` Delta table. No file copying. _(weekly, automated)_ ⚠️ Check whether other import parameters (file types, separated by comma or semicolon, encoding). Need to be added to the table, so the import accurately considers the header _given_ other import parameters.
 4. ⬜ **`data-ingest-bronze`** → reads `file_to_header_since2020`, loads files from original paths with correct delimiter/encoding per header, maps columns to unified schema, writes to `bronze_since2020` Delta table. Incremental via `input_file` tracking.
 5. ⬜ **`data-clean-silver`** → reads bronze, deduplicates, validates, writes to silver Delta table
 6. ⬜ **Gold table** → aggregated/sampled data for analysis export
 
 ### From 2016 to 2019
 
-1. **`data-organize-fromDocuments`** → moved to `/Workspace/Raw/from2016to2019/` _(done once)_
+1. ✅ **`data-organize-fromDocuments`** → moved to `/Workspace/Raw/from2016to2019/` _(done once)_
 2. ⬜ **`data-byheader-from2016to2019`** → classify ~2,671 files using headers one–seven, record in `file_to_header_from2016to2019` _(run once)_
 3. ⬜ **`data-ingest-bronze-from2016to2019`** → ingest into `bronze_from2016to2019` Delta table _(run once)_
 4. ⬜ **Silver / Gold** → same pattern as since2020
@@ -213,21 +213,16 @@ Runs every Monday at 3:36 AM ET. Tasks:
 All tasks use Git source (`github.com/dime-worldbank/ColombiaTransMilenio`, branch `main`) and cluster `ITSDA_DAP_TEAM_colombiaprojecttransmileniorawdata`.
 
 
-## Status of 2016–2019 Validaciones Data
+## Next step for 2016–2019 Validaciones Data
 
-**Has any processing been done beyond organizing files?**
+### Status
+From current workflow:
+* ✅ **`data-organize-fromDocuments`** → moved to `/Workspace/Raw/from2016to2019/` _(done once)_
 
-**Validaciones: No.** The 2016–2019 validaciones data has only been:
-- ✅ Moved from `/Documents/2016data`...`2019data` to `/Workspace/Raw/from2016to2019/` (by `data-organize-fromDocuments`)
+From old workflows
+* **Validaciones (bogota-hdfs/sample-will): yes, partially.** `sample-will/` contains Aug 2017–May 2018 validaciones with numeric card IDs, joined with treatment variables. This means the
+* **Recharges: partially.** The `recharges-clean-and-sample` notebook loaded 2017–2019 recharges into `recargas_2017to2019_raw` Delta table.
 
-What has NOT been done:
-- ⬜ Header classification (headers one–seven are defined in code but never applied)
-- ⬜ Bronze table creation
-- ⬜ Any cleaning or analysis
-
-**Recharges: partially.** The `recharges-clean-and-sample` notebook loaded 2017–2019 recharges into `recargas_2017to2019_raw` Delta table.
-
-**Validaciones (bogota-hdfs/sample-will): yes, partially.** `sample-will/` contains Aug 2017–May 2018 validaciones with numeric card IDs, joined with treatment variables. This is the only known prior processing of 2016–2019 validaciones — done ad hoc by Will, outside the main pipeline.
 
 ### Known challenges for 2016–2019 data:
 - Mixed file formats: csv, txt, xls, xlsx, gz archives, zip files
@@ -238,13 +233,15 @@ What has NOT been done:
 - `2019ER10074` folder with different structure (zip files)
 
 
-## Immediate Next Steps: 2016–2019 Data
+### To-do
 
 The 2016–2019 validaciones pipeline is the current priority. Files are organized in `/Workspace/Raw/from2016to2019/` (~2,671 files). Headers one–seven are already defined in `utils/spark_df_handler`. Steps in order:
 
 ### 1. Create `data-byheader-from2016to2019`
-Classify each file by header type, record in `file_to_header_from2016to2019` Delta table (mirrors `data-byheader-since2020`). Challenges:
-- Mixed formats: csv, txt, xls, xlsx, gz, zip — need format detection before header read
+Classify each file by header type, record in `file_to_header_from2016to2019` Delta table (mirrors `data-byheader-since2020`).  Check whether other import parameters (file types, separated by comma or semicolon, encoding). Need to be added to the table, so the import accurately considers the header _given_ other import parameters.
+
+Challenges:
+- Mixed formats: csv, txt, xls, xlsx, gz, zip — need format detection before header read - **some may need decompression step first**
 - 30 `VALTRONCAL_DD-06-2018/` subfolders (each has daily gz files) → handle as batches
 - `2019ER10074/` subfolder (zip files) → unzip first or read inside zip
 - Semicolon and comma delimiters mixed across files
@@ -255,10 +252,6 @@ Use the header mapping to load files from original paths, apply `spark_df_handle
 ### 3. Create `data-clean-silver-from2016to2019` (or extend `data-clean`)
 Deduplicate, standardize dates and encoding, write to `silver_validaciones_from2016to2019`.
 
-### Open questions before starting
-- Verify headers one–seven in `spark_df_handler` still cover all file variants in `from2016to2019`
-- Decide how to handle xls/xlsx (different reader than csv/txt)
-- Confirm whether gz files inside `VALTRONCAL_*` subfolders need a decompression step before classification
 
 
 ## Questions to ask TM
