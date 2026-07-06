@@ -78,7 +78,7 @@ Classical file storage (~0.7 TB). Data moves through stages:
 
 | Table | Description | Status |
 | --- | --- | --- |
-| `file_to_header_since2020` | Maps each raw file (since 2020) to its header group + broken flag | ✅ Active (rebuilt June 2026) |
+| `file_classification_since2020` | Maps each raw file (since 2020) to its per-file classification metadata (encoding, delimiter, archive format, header group, status) | ✅ Active (refactored July 2026) |
 | `tm_bronze` | Old name for since2020 bronze table but EMPTY | ⚠️ To rename and populate → `bronze_validaciones_since2020` |
 | `bronze_raw_staging` | Auxiliary staging table for COPY INTO attempts | ⚠️ Legacy (failed approach, can be dropped) |
 | `recargas_2017to2019_raw` | Raw recharges data 2017–2019 (28 columns) | ✅ Populated |
@@ -87,7 +87,7 @@ Classical file storage (~0.7 TB). Data moves through stages:
 
 | Table | Description |
 | --- | --- | 
-| `file_to_header_from2016to2019` | Maps each raw file (2016–2019) to its header group | 
+| `file_classification_from2016to2019` | Maps each raw file (2016–2019) to its per-file classification metadata | 
 | `bronze_validaciones_since2020` | Unified bronze table for since2020 validaciones (replaces `tm_bronze`) | 
 | `bronze_validaciones_from2016to2019` | Unified bronze table for 2016–2019 validaciones (numeric cards) | 
 | `silver_validaciones_since2020` | Deduplicated, clean validaciones  | 
@@ -105,7 +105,7 @@ Classical file storage (~0.7 TB). Data moves through stages:
 | `data-fetch` | Downloads newest data from TM GCloud API to `/Data/` | Mondays (job) | ✅ Active |
 | `data-organize-fromDocuments` | Moves old data from `/Documents/` to `/Workspace/Raw/` | Ran once | ✅ Done |
 | `data-organize-fromData` | Moves new downloads from `/Data/` to `/Workspace/Raw/since2020/` | Mondays (job) | ✅ Active |
-| `data-byheader-since2020` | Classifies files by header → `file_to_header_since2020` table (no file copying) | Mondays (job) | ✅ Active (refactored June 2026) ⚠️ check whether other import parameters need to be added to the table |
+| `data-byheader-since2020` | Classifies files by header → `file_classification_since2020` table (no file copying) | Mondays (job) | ✅ Active (refactored July 2026) |
 | `data-ingest-bronze` | Reads files by header group, applies column mapping, writes to `bronze_since2020` Delta table | To be created | ⬜ TODO |
 | `data-clean` | Old: imports CSVs → transforms → unions → dedup → parquet. New role: bronze→silver only | To be refactored | ⚠️ Partially obsolete, to refactor |
 
