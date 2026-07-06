@@ -9,6 +9,7 @@
 
 # COMMAND ----------
 
+import os
 V_DIR = '/Volumes/prd_csc_mega/sColom15/vColom15/'
 os.listdir(V_DIR)
 
