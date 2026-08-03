@@ -519,8 +519,8 @@ for col in final_columns:
     if col not in rawfiles_to_header.columns:
         rawfiles_to_header[col] = None
 
-rawfiles_to_header["detected_at"] = pd.to_datetime(rawfiles_to_header["detected_at"], errors="coerce")
-rawfiles_to_header["ingested_at"] = pd.to_datetime(rawfiles_to_header["ingested_at"], errors="coerce")
+rawfiles_to_header["detected_at"] = pd.to_datetime(rawfiles_to_header["detected_at"], utc = True, errors="coerce")
+rawfiles_to_header["ingested_at"] = pd.to_datetime(rawfiles_to_header["ingested_at"], utc = True, errors="coerce")
 
 rawfiles_to_header_spark = spark.createDataFrame(rawfiles_to_header[final_columns])
 # Guard: insertInto is position-based — assert column order matches the table schema
