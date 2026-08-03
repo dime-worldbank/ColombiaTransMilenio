@@ -536,4 +536,4 @@ assert table_cols == df_cols, (
 # insertInto overwrites data only — schema and column comments are preserved
 rawfiles_to_header_spark.write.insertInto("prd_mega.scolom15.file_classification_since2020", overwrite=True)
 
-print(f"Saved {rawfiles_to_header_spark.count()} rows)
+print(f"Saved {rawfiles_to_header_spark.count()} rows")
