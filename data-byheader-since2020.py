@@ -57,16 +57,6 @@ raw_dir = V_DIR + '/Workspace/Raw/'
 
 # COMMAND ----------
 
-# DBTITLE 1,DROP table (one-time reset — delete this cell after run)
-# MAGIC %sql
-# MAGIC -- ONE-TIME: drop the table so it is rebuilt from scratch with the correct schema.
-# MAGIC -- Delete this cell after the notebook completes successfully.
-# MAGIC -- Drop old name (file_to_header_since2020) and new name to ensure a clean start.
-# MAGIC DROP TABLE IF EXISTS prd_mega.scolom15.file_to_header_since2020;
-# MAGIC DROP TABLE IF EXISTS prd_mega.scolom15.file_classification_since2020;
-
-# COMMAND ----------
-
 # DBTITLE 1,Cell 6
 # MAGIC %sql
 # MAGIC -- Create table to list filename, detected import metadata, and header if it does not exist
