@@ -177,32 +177,41 @@ BRONZE_TABLE  = "prd_mega.scolom15.bronze_validaciones_since2020"
 # COMMAND ----------
 
 # DBTITLE 1,Profile pending and ingested files
+# Load control table as pandas DataFrame for easier manipulation
 classification_df = spark.table(CONTROL_TABLE).toPandas()
 
+# Dimensions to group by for file statistics
 stats_dims = [
-    "classification_status",
-    "header",
-    "transform_format",
-    "file_format",
-    "archive_format",
-    "zipped",
-    "delimiter",
-    "encoding",
+    "classification_status",  # File classification outcome
+    "header",                 # Raw schema fingerprint
+    "transform_format",       # Mapping recipe to bronze schema
+    "file_format",            # File format (csv, etc.)
+    "archive_format",         # Archive type (zip or NULL)
+    "zipped",                 # ZIP flag (1/0)
+    "delimiter",              # Field separator
+    "encoding",               # Character encoding
 ]
 
+# Add ingestion state column: "pending" if not ingested, "already_ingested" otherwise
 classification_df["ingestion_state"] = classification_df["ingested_at"].apply(
     lambda x: "pending" if pd.isna(x) else "already_ingested"
 )
 
+# Group files by ingestion state and relevant dimensions, count files per group
 stats_df = (
     classification_df
     .groupby(["ingestion_state"] + stats_dims, dropna=False)
     .size()
     .reset_index(name="n_files")
 )
+
+# Compute total files per ingestion state
 stats_df["state_total"] = stats_df.groupby("ingestion_state")["n_files"].transform("sum")
+
+# Compute percentage of files within each state group
 stats_df["pct_within_state"] = (100.0 * stats_df["n_files"] / stats_df["state_total"]).round(2)
 
+# Show summary: total files by ingestion state
 print("Files by ingestion state:")
 display(
     stats_df[["ingestion_state", "n_files"]]
@@ -210,12 +219,12 @@ display(
     .sum()
 )
 
+# Show detailed breakdown: file mix by state, header, zipped, encoding
 print("Detailed file mix by state:")
 display(
     stats_df
     .sort_values(["ingestion_state", "header", "zipped", "encoding"], na_position="last")
 )
-
 
 # COMMAND ----------
 
@@ -228,6 +237,21 @@ control_df = classification_df[
 
 print(f"Files pending ingestion: {len(control_df)}")
 
+
+# COMMAND ----------
+
+# Inspect how files are distributed across headers 
+control_df = classification_df[
+    (classification_df["classification_status"] == "ready") 
+].copy()
+
+tot_file = 0 
+for h in classification_df["header"].unique():
+    number_with_header = classification_df[classification_df["header"] == h].shape[0]
+    print(f"Number of files with header {h}: {number_with_header}")
+    tot_file = tot_file + number_with_header
+
+print(f"Total number of files: {tot_file}")
 
 # COMMAND ----------
 
@@ -306,13 +330,16 @@ except Exception:
     already_in_bronze = set()
     print("Bronze table is empty or does not exist yet — will be created on first write")
 
+# Loop over each header group (files with identical raw schema)
 for header_group in sorted(control_df['header'].dropna().unique()):
     group         = control_df[control_df['header'] == header_group].copy()
+    # Ensure only one transform_format per header group
     assert group['transform_format'].nunique(dropna=False) == 1, (
         f"[{header_group}] mixed transform_format values: {group['transform_format'].unique().tolist()}"
     )
     transform_fmt = group['transform_format'].iloc[0]
 
+    # Skip header groups with no transform defined
     if transform_fmt not in TRANSFORMS:
         print(f"Skipping {header_group}: no transform defined for '{transform_fmt}'")
         ingestion_log.append({'header': header_group, 'encoding': None, 'zipped': None, 'files': len(group), 'rows': 0, 'status': 'skipped_no_transform'})
@@ -329,6 +356,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
         zipped_int = int(zipped) if pd.notna(zipped) else 0
         print(f"  [{encoding}] zipped={zipped_int} | {n_files} files | sep='{delimiter}'")
 
+        # If files are zipped, extract inner CSVs to permanent cache
         if zipped_int == 1:
             extracted_paths = []
             n_extracted = 0
@@ -355,9 +383,11 @@ for header_group in sorted(control_df['header'].dropna().unique()):
                 ingestion_log.append({'header': header_group, 'encoding': encoding, 'zipped': zipped_int, 'files': n_files, 'rows': 0, 'status': f'error: {e}'})
                 continue
         else:
+            # For plain CSVs, normalize paths for Spark
             read_paths = ['/' + p.lstrip('/') for p in original_paths]
 
         # --- Duplicate guard ---
+        # Skip files already in bronze, only repair ingested_at in control table
         overlap = [p for p in read_paths if p in already_in_bronze]
         if overlap:
             print(f"    → {len(overlap)}/{n_files} source files already in bronze — skipping write, repairing ingested_at")
@@ -374,6 +404,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
                                    'files': n_files, 'rows': len(overlap), 'status': 'already_in_bronze'})
             continue
 
+        # Read raw files as Spark DataFrame with detected encoding and delimiter
         dfraw = (
             spark.read.format("csv")
             .option("header", "true")
@@ -382,6 +413,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
             .load(read_paths)
         )
 
+        # Get column names for transform logic
         try:
             dfraw_cols = dfraw.columns
         except Exception as e:
@@ -389,6 +421,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
             ingestion_log.append({'header': header_group, 'encoding': encoding, 'zipped': zipped_int, 'files': n_files, 'rows': 0, 'status': f'error: {e}'})
             continue
 
+        # Apply transform to map raw columns to bronze schema
         df = (
             TRANSFORMS[transform_fmt](dfraw, dfraw_cols)
             .withColumns({
@@ -399,6 +432,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
             })
         )
 
+        # Write transformed data to bronze Delta table and update control table
         try:
             t0 = time.time()
             row_count = df.count()
@@ -414,6 +448,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
             t_write = time.time() - t0
             already_in_bronze.update(read_paths)  # keep duplicate guard current for remaining batches
 
+            # Mark files as ingested in control table
             processed_df = spark.createDataFrame([(p,) for p in original_paths], ["raw_filepath"])
             batch_suffix = f"{header_group}_{encoding}_{zipped_int}".replace('-', '_').replace('.', '_')
             batch_view = f"_ingested_{batch_suffix}"
@@ -432,6 +467,7 @@ for header_group in sorted(control_df['header'].dropna().unique()):
             print(f"    → ERROR: {e}")
             ingestion_log.append({'header': header_group, 'encoding': encoding, 'zipped': zipped_int, 'files': n_files, 'rows': 0, 'status': f'error: {e}'})
 
+# Print summary of ingestion log and elapsed time
 total_min = (time.time() - run_start) / 60
 print(f"\n=== Ingestion complete — {total_min:.1f} min total ===")
 display(pd.DataFrame(ingestion_log))
@@ -444,6 +480,7 @@ display(pd.DataFrame(ingestion_log))
 # Inspect for: garbled characters (encoding bug), NULLs where values expected,
 # unexpected station/emisor values, correct station_access for format_7.
 
+# Columns to check in sample output for validation
 check_cols = [
     "fecha_transaccion", "emisor", "operator", "line",
     "station", "station_access", "fare_type", "day_group_type",
@@ -451,15 +488,18 @@ check_cols = [
     "_ingestion_ts", "_source_file",
 ]
 
-# Mark header groups ingested in the current session (if cell 9 was run)
+# Identify header groups ingested in the current session (if cell 9 was run)
 new_this_run = set()
 try:
+    # Collect header groups with successful ingestion in this run
     new_this_run = {b['header'] for b in ingestion_log if b['status'] == 'ok'}
 except NameError:
     pass  # ingestion_log not in scope — cell 9 was not run this session
 
+# Load bronze table as Spark DataFrame
 bronze = spark.table(BRONZE_TABLE)
 
+# List all distinct header groups present in bronze table
 all_header_groups = sorted(
     bronze.select("_header_group").distinct().toPandas()["_header_group"].dropna().tolist()
 )
@@ -467,9 +507,11 @@ all_header_groups = sorted(
 print(f"Header groups in bronze  : {len(all_header_groups)}")
 print(f"New this session         : {sorted(new_this_run) if new_this_run else '(none / cell 9 not run)'}\n")
 
+# Loop through each header group to summarize and sample data
 for hg in all_header_groups:
     tag = "  ← NEW this run" if hg in new_this_run else ""
 
+    # Aggregate summary statistics for the header group
     summary = (
         bronze
         .filter(F.col("_header_group") == hg)
@@ -483,12 +525,14 @@ for hg in all_header_groups:
         .iloc[0]
     )
 
+    # Print summary for the header group
     print(
         f"\n── {hg}{tag} | {int(summary['rows']):,} rows "
         f"| {int(summary['ingestion_batches'])} batch(es) "
         f"| first={summary['first_ingested']} | last={summary['last_ingested']} ──"
     )
 
+    # Display 5 random sample rows for the header group for inspection
     sample = (
         bronze
         .filter(F.col("_header_group") == hg)
@@ -498,7 +542,6 @@ for hg in all_header_groups:
         .toPandas()
     )
     display(sample)
-
 
 # COMMAND ----------
 

@@ -137,15 +137,200 @@ print([x.name for x in dbutils.fs.ls(V_DIR + "/Workspace/Clean/")])
 
 # COMMAND ----------
 
+# DBTITLE 1,Detect pending files to organize (2016-2019)
+# Detect what still needs to be organized for 2016-2019 data
 destination = V_DIR + "/Workspace/Raw/from2016to2019/"
 
+# Get files already in destination
+existing_files = set(os.listdir(destination)) if os.path.isdir(destination) else set()
+print(f"Files already in destination: {len(existing_files)}")
+print("="*60)
+
+# Track what needs to be moved
+pending = []
+
+# Known broken/excluded files (intentionally skipped in cell 15)
+broken_files = {'Valzonal_20180901.zip', 'Valzonal_20180902.zip', 'Validacion_Troncal_20191031.zip'}
+
+def archive_contents_present(names, existing):
+    """Check if archive contents (or their unzipped versions) are already in destination.
+    Archives often contain .zip files that get unzipped to .csv and removed."""
+    for n in names:
+        basename = os.path.basename(n)
+        if not basename or n.endswith('/'):
+            continue  # Skip directory entries
+        if basename in broken_files:
+            continue  # Known broken files that are intentionally skipped
+        if basename in existing:
+            continue  # File exists directly
+        # Check if it was a .zip that got unzipped and removed
+        if basename.endswith('.zip'):
+            csv_name = basename[:-4] + '.csv'
+            if csv_name in existing:
+                continue  # Unzipped version exists
+        return False  # At least one file is truly missing
+    return True  # All files accounted for
+
+# --- 2016 ---
+subf2016 = [f for f in os.listdir(f"{source}/2016data") if os.path.isfile(f"{source}/2016data/{f}")] if os.path.isdir(f"{source}/2016data") else []
+for file in subf2016:
+    if file not in existing_files:
+        pending.append((f"2016data/{file}", file))
+
+print(f"\n[2016] Files to move: {len([p for p in pending if p[0].startswith('2016')])}")
+
+# --- 2017 ---
+decompressed_dir_2017 = f"{source}/2017data/decompressed/"
+monthly_files = ['02_ValidacionesFeb2017.csv', '03_ValidacionesMar2017.csv', '04_ValidacionesAbr2017.csv',
+                 '01_ValidacionesEnero2017.csv','05_ValidacionesMay2017.csv', '06_ValidacionesJun2017.csv', 
+                 '07_ValidacionesJul2017.csv', '08_ValidacionesAgo2017.csv', '09_ValidacionesSept2017.csv']
+for file in monthly_files:
+    if file not in existing_files:
+        pending.append((f"2017data/decompressed/{file}", file))
+
+for folder in ['ValTroncal Oct2017/', 'ValZonal Dic2017/', 'ValZonal Oct2017/']:
+    try:
+        files = [f.name for f in dbutils.fs.ls(f"{decompressed_dir_2017}/{folder}")]
+        for f in files:
+            if f not in existing_files:
+                pending.append((f"2017data/decompressed/{folder}{f}", f))
+    except Exception:
+        pass
+
+# Check Nov 2017 gz extractions
+for folder in ['ValTroncal Nov2017/', 'ValZonal Nov2017/']:
+    directory = f"{decompressed_dir_2017}/{folder}"
+    if os.path.isdir(directory):
+        for subfolder in os.listdir(directory):
+            fd = os.path.join(directory, subfolder)
+            if os.path.isdir(fd):
+                for f in os.listdir(fd):
+                    if f == 'valzonal_27nov2017_MCKENNEDY.gz':
+                        continue
+                    output_name = f[:-3] if f.endswith('.gz') else f
+                    if output_name not in existing_files:
+                        pending.append((f"2017data/decompressed/{folder}{subfolder}/{f} (gz to extract)", output_name))
+
+# Check Troncal Dic 2017 archive (it's actually a zip despite .7z extension)
+try:
+    with py7zr.SevenZipFile(f"{source}/2017data/ValTroncal Dic2017.7z", mode='r') as z:
+        names = z.getnames()
+    if not archive_contents_present(names, existing_files):
+        pending.append((f"2017data/ValTroncal Dic2017.7z (archive to extract)", "ValTroncal Dic2017.7z"))
+except (py7zr.Bad7zFile, Exception):
+    try:
+        with zipfile.ZipFile(f"{source}/2017data/ValTroncal Dic2017.7z", 'r') as zf:
+            names = [n for n in zf.namelist() if n and not n.endswith('/')]
+        if not archive_contents_present(names, existing_files):
+            pending.append((f"2017data/ValTroncal Dic2017.7z (archive to extract)", "ValTroncal Dic2017.7z"))
+    except Exception:
+        pending.append((f"2017data/ValTroncal Dic2017.7z (unreadable)", "ValTroncal Dic2017.7z"))
+
+print(f"[2017] Files to move: {len([p for p in pending if p[0].startswith('2017')])}")
+
+# --- 2018 ---
+subf2018 = os.listdir(f"{source}/2018data") if os.path.isdir(f"{source}/2018data") else []
+rar_decompressed = os.listdir(f"{source}/2018data/rar_decompressed") if os.path.isdir(f"{source}/2018data/rar_decompressed") else []
+for file in rar_decompressed:
+    if file not in existing_files:
+        pending.append((f"2018data/rar_decompressed/{file}", file))
+
+# Check archive contents against existing files
+files_rar = ['ValTroncal Dic2018 csvs.rar', 'ValZonal Feb2018 csvs.rar', 'ValZonal Mar2018 csvs.rar']
+files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']
+archives_2018 = [f for f in subf2018 if f not in files_not_7z and f != 'rar_decompressed' and os.path.isfile(f"{source}/2018data/{f}")]
+for file in archives_2018:
+    filepath = f"{source}/2018data/{file}"
+    try:
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            names = z.getnames()
+        if not archive_contents_present(names, existing_files):
+            pending.append((f"2018data/{file} (archive to extract)", file))
+    except py7zr.Bad7zFile:
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+                if not archive_contents_present(names, existing_files):
+                    pending.append((f"2018data/{file} (archive to extract)", file))
+        except zipfile.BadZipFile:
+            pending.append((f"2018data/{file} (unreadable archive)", file))
+
+# Check ValTroncal Nov/Oct 2018 (zips with .7z extension)
+for file in ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']:
+    try:
+        with zipfile.ZipFile(f"{source}/2018data/{file}", 'r') as zip_ref:
+            names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+            if not archive_contents_present(names, existing_files):
+                pending.append((f"2018data/{file} (zip to extract)", file))
+    except Exception:
+        pending.append((f"2018data/{file} (unreadable)", file))
+
+print(f"[2018] Files/archives to process: {len([p for p in pending if p[0].startswith('2018')])}")
+
+# --- 2019 ---
+subf2019 = os.listdir(f"{source}/2019data") if os.path.isdir(f"{source}/2019data") else []
+other_2019 = os.listdir(f"{source}/2019data/other") if os.path.isdir(f"{source}/2019data/other") else []
+other_2019 = [f for f in other_2019 if f not in broken_files]  # exclude intentionally skipped files
+for file in other_2019:
+    if file not in existing_files:
+        pending.append((f"2019data/other/{file}", file))
+
+archives_2019 = [f for f in subf2019 if f != 'other' and os.path.isfile(f"{source}/2019data/{f}")]
+for file in archives_2019:
+    filepath = f"{source}/2019data/{file}"
+    try:
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            names = z.getnames()
+        if not archive_contents_present(names, existing_files):
+            pending.append((f"2019data/{file} (archive to extract)", file))
+    except py7zr.Bad7zFile:
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+                if not archive_contents_present(names, existing_files):
+                    pending.append((f"2019data/{file} (archive to extract)", file))
+        except zipfile.BadZipFile:
+            pending.append((f"2019data/{file} (unreadable archive)", file))
+
+print(f"[2019] Files/archives to process: {len([p for p in pending if p[0].startswith('2019')])}")
+
+# --- Summary ---
+print("\n" + "="*60)
+print(f"TOTAL pending items: {len(pending)}")
+if pending:
+    print("\nSample of pending items:")
+    for src, fname in pending[:20]:
+        print(f"  -> Moving: {fname}  (from {src})")
+    if len(pending) > 20:
+        print(f"  ... and {len(pending) - 20} more.")
+else:
+    print("\n✓ All files are already organized. Nothing to move.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Move 2016-2019 data (skip existing)
+destination = V_DIR + "/Workspace/Raw/from2016to2019/"
+existing_at_dest = set(os.listdir(destination)) if os.path.isdir(destination) else set()
+
+def smart_copy(src_path, dest_path, filename):
+    """Copy file only if it doesn't already exist in destination. Returns True if copied."""
+    if filename in existing_at_dest:
+        return False
+    print(f"  -> Moving: {filename}")
+    dbutils.fs.cp(src_path, dest_path)
+    return True
+
 # 2016
-subf2016 = os.listdir(f"{source}/2016data")
+subf2016 = [f for f in os.listdir(f"{source}/2016data") if os.path.isfile(f"{source}/2016data/{f}")]
 print(subf2016) # ready to directly copy 
 
+copied, skipped = 0, 0
 for file in tqdm(subf2016):
-    dbutils.fs.cp(f"{source}/2016data/{file}" ,
-                  f"{destination}/{file}")
+    if smart_copy(f"{source}/2016data/{file}", f"{destination}/{file}", file):
+        copied += 1
+    else:
+        skipped += 1
+print(f"[2016] Copied: {copied}, Skipped (already exists): {skipped}")
     
 # 2017
 subf2017 = os.listdir(f"{source}/2017data")  
@@ -171,15 +356,23 @@ for folder in decompressed:
 monthly_files = ['02_ValidacionesFeb2017.csv', '03_ValidacionesMar2017.csv', '04_ValidacionesAbr2017.csv',
                  '01_ValidacionesEnero2017.csv','05_ValidacionesMay2017.csv', '06_ValidacionesJun2017.csv', 
                  '07_ValidacionesJul2017.csv', '08_ValidacionesAgo2017.csv', '09_ValidacionesSept2017.csv' ]
+copied, skipped = 0, 0
 for file in tqdm(monthly_files):
-    dbutils.fs.cp(f"{decompressed_dir}/{file}" ,
-                  f"{destination}/{file}") # Copy monthly files
+    if smart_copy(f"{decompressed_dir}/{file}", f"{destination}/{file}", file):
+        copied += 1
+    else:
+        skipped += 1
+print(f"[2017 monthly] Copied: {copied}, Skipped: {skipped}")
     
+copied, skipped = 0, 0
 for folder in ['ValTroncal Oct2017/', 'ValZonal Dic2017/', 'ValZonal Oct2017/']: # copy from `decompressed` individual folders
     files = [f.name for f in dbutils.fs.ls(f"{decompressed_dir}/{folder}") ]
     for f in tqdm(files):
-        dbutils.fs.cp(f"{decompressed_dir}/{folder}/{f}", 
-                      f"{destination}/{f}")
+        if smart_copy(f"{decompressed_dir}/{folder}/{f}", f"{destination}/{f}", f):
+            copied += 1
+        else:
+            skipped += 1
+print(f"[2017 folders] Copied: {copied}, Skipped: {skipped}")
 
 for folder in ['ValTroncal Nov2017/', 'ValZonal Nov2017/']: # extract
     directory = f"{decompressed_dir}/{folder}"
@@ -188,55 +381,112 @@ for folder in ['ValTroncal Nov2017/', 'ValZonal Nov2017/']: # extract
         files = os.listdir(fd)
         files = [x for x in files if x != 'valzonal_27nov2017_MCKENNEDY.gz'] # the file is corrupted and cannot be extracted
         for f in files:
+            # Skip if output already exists (gz extracts to filename without .gz)
+            output_name = f[:-3] if f.endswith('.gz') else f
+            if output_name in existing_at_dest:
+                continue
             Archive( fd + "/" + f ).extractall(destination)
 
-patoolib.extract_archive(f"{source}/2017data/ValTroncal Dic2017.7z", outdir=destination) # Extract Troncal DIC 2017
+# Extract Troncal DIC 2017 (skip if contents already extracted)
+try:
+    with py7zr.SevenZipFile(f"{source}/2017data/ValTroncal Dic2017.7z", mode='r') as z:
+        names = z.getnames()
+    if not all(os.path.basename(n) in existing_at_dest for n in names if os.path.basename(n)):
+        patoolib.extract_archive(f"{source}/2017data/ValTroncal Dic2017.7z", outdir=destination)
+    else:
+        print("[2017 Troncal Dic] Already extracted, skipping")
+except Exception:
+    patoolib.extract_archive(f"{source}/2017data/ValTroncal Dic2017.7z", outdir=destination)
 
 # 2018 
-subf2018 = os.listdir(f"{source}/2018data")
+subf2018 = [f for f in os.listdir(f"{source}/2018data") if os.path.isfile(f"{source}/2018data/{f}")]
 print(subf2018)
 
 files_rar    = ['ValTroncal Dic2018 csvs.rar',  'ValZonal Feb2018 csvs.rar',  'ValZonal Mar2018 csvs.rar']
 files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']
-files7z  = [f for f in subf2018 if f not in files_not_7z]
+files7z  = [f for f in subf2018 if f not in files_not_7z and os.path.isfile(f"{source}/2018data/{f}")]
 
 
 for file in tqdm(files7z):
-    with py7zr.SevenZipFile(f"{source}/2018data/{file}", mode='r') as z:
-        z.extractall(path=destination) # zonal for Oct and Aug 2018 do not have "zonal" in filenames, but troncal for those months do
+    filepath = f"{source}/2018data/{file}"
+    try:
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            names = z.getnames()
+        # Skip if all contents already extracted
+        if all(os.path.basename(n) in existing_at_dest for n in names if os.path.basename(n)):
+            continue
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            z.extractall(path=destination) # zonal for Oct and Aug 2018 do not have "zonal" in filenames, but troncal for those months do
+    except py7zr.Bad7zFile:
+        # Some files have .7z extension but are actually zip files
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+                if all(os.path.basename(n) in existing_at_dest for n in names):
+                    continue
+                zip_ref.extractall(destination)
+        except zipfile.BadZipFile:
+            print(f"⚠️ Skipping {file}: neither valid 7z nor zip")
 
 for file in tqdm(['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']):
     with zipfile.ZipFile(f"{source}/2018data/{file}", 'r') as zip_ref:
+        names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+        if all(os.path.basename(n) in existing_at_dest for n in names):
+            continue
         zip_ref.extractall(destination)
 
 rar_decompressed = os.listdir(f"{source}/2018data/rar_decompressed")
 assert len(rar_decompressed) == 90
 np.unique([f[-3:] for f in rar_decompressed ])
+copied, skipped = 0, 0
 for file in tqdm(rar_decompressed):
-    dbutils.fs.cp(f"{source}/2018data/rar_decompressed/{file}" ,
-                  f"{destination}/{file}") # Copy 
+    if smart_copy(f"{source}/2018data/rar_decompressed/{file}", f"{destination}/{file}", file):
+        copied += 1
+    else:
+        skipped += 1
+print(f"[2018 rar] Copied: {copied}, Skipped: {skipped}")
 
 # 2019
-subf2019 = os.listdir(f"{source}/2019data")
+subf2019 = [f for f in os.listdir(f"{source}/2019data") if os.path.isfile(f"{source}/2019data/{f}")]
 
 files_not_7z = ["other"]
 files7z  = [f for f in subf2019 if f not in files_not_7z ]
 
 for file in tqdm(files7z):
-    with py7zr.SevenZipFile(f"{source}/2019data/{file}", mode='r') as z:
-        z.extractall(path=destination)
+    filepath = f"{source}/2019data/{file}"
+    try:
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            names = z.getnames()
+        # Skip if all contents already extracted
+        if all(os.path.basename(n) in existing_at_dest for n in names if os.path.basename(n)):
+            continue
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            z.extractall(path=destination)
+    except py7zr.Bad7zFile:
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                names = [n for n in zip_ref.namelist() if n and not n.endswith('/')]
+                if all(os.path.basename(n) in existing_at_dest for n in names):
+                    continue
+                zip_ref.extractall(destination)
+        except zipfile.BadZipFile:
+            print(f"⚠️ Skipping {file}: neither valid 7z nor zip")
 
 files_other = os.listdir(f"{source}/2019data/other")
 files_other  = [f for f in files_other if f !=  'Validacion_Troncal_20191031.zip'  ]
+copied, skipped = 0, 0
 for file in tqdm(files_other):
-    dbutils.fs.cp(f"{source}/2019data/other/{file}" ,
-                  f"{destination}/{file}") # Copy 
+    if smart_copy(f"{source}/2019data/other/{file}", f"{destination}/{file}", file):
+        copied += 1
+    else:
+        skipped += 1
+print(f"[2019 other] Copied: {copied}, Skipped: {skipped}")
     
 
 # unzip files in destination
 files_in_dest = os.listdir(destination)
 
-zipfiles = [f for f in files_in_dest if ".zip" in f] 
+zipfiles = [f for f in files_in_dest if ".zip" in f and f not in existing_at_dest] 
 print("Total zipfiles:", len(zipfiles))
 broken = ['Valzonal_20180901.zip', 'Valzonal_20180902.zip']
 for file in tqdm(zipfiles):
@@ -247,11 +497,10 @@ for file in tqdm(zipfiles):
         zip_ref.extractall(destination)
     os.remove(f"{destination}/{file}")
 
+files_in_dest = os.listdir(destination)
 assert len([f for f in files_in_dest if ".rar" in f]) == 0
 assert len([f for f in files_in_dest if ".7z" in f]) == 0
 assert len([f for f in files_in_dest if ".zip" in f]) == 0
-
-files_in_dest = os.listdir(destination) #2703
 print("Number of files in destination:", len(files_in_dest))
 
 
