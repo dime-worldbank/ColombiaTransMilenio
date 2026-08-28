@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Reorganize data - from Documents 
 # MAGIC
@@ -32,6 +36,7 @@ import zipfile
 from random import sample, seed
 seed(510)
 
+from collections import defaultdict
 from functools import reduce
 from pyspark.sql import DataFrame
 
@@ -289,7 +294,8 @@ for file in rar_decompressed:
 
 # Check archive contents against existing files
 files_rar = ['ValTroncal Dic2018 csvs.rar', 'ValZonal Feb2018 csvs.rar', 'ValZonal Mar2018 csvs.rar']
-files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']
+files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z',
+                            'ValTroncal Abr2018.7z', 'ValZonal Abr2018.7z']
 archives_2018 = [f for f in subf2018 if f not in files_not_7z and f != 'rar_decompressed' and os.path.isfile(f"{source}/2018data/{f}")]
 for file in archives_2018:
     filepath = f"{source}/2018data/{file}"
@@ -503,7 +509,7 @@ subf2018 = [f for f in os.listdir(f"{source}/2018data") if os.path.isfile(f"{sou
 print(subf2018)
 
 files_rar    = ['ValTroncal Dic2018 csvs.rar',  'ValZonal Feb2018 csvs.rar',  'ValZonal Mar2018 csvs.rar']
-files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']
+files_not_7z = files_rar + ['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z', 'ValTroncal Abr2018.7z', 'ValZonal Abr2018.7z']
 files7z  = [f for f in subf2018 if f not in files_not_7z and os.path.isfile(f"{source}/2018data/{f}")]
 
 
@@ -536,7 +542,7 @@ for file in tqdm(['ValTroncal Nov2018.7z', 'ValTroncal Oct2018.7z']):
         zip_ref.extractall(destination)
 
 rar_decompressed = os.listdir(f"{source}/2018data/rar_decompressed")
-assert len(rar_decompressed) == 90
+print(f"[2018 rar_decompressed] {len(rar_decompressed)} files")
 np.unique([f[-3:] for f in rar_decompressed ])
 copied, skipped = 0, 0
 for file in tqdm(rar_decompressed):
@@ -597,14 +603,89 @@ for file in tqdm(zipfiles):
         zip_ref.extractall(destination)
     os.remove(f"{destination}/{file}")
 
-files_in_dest = os.listdir(destination)
-assert len([f for f in files_in_dest if ".rar" in f]) == 0
-assert len([f for f in files_in_dest if ".7z" in f]) == 0
-assert len([f for f in files_in_dest if ".zip" in f]) == 0
-num_files = len([f for f in files_in_dest if os.path.isfile(os.path.join(destination, f))])
-num_dirs = len([f for f in files_in_dest if os.path.isdir(os.path.join(destination, f))])
-print(f"Files in destination (top-level): {num_files}, Subdirectories: {num_dirs}")
+# COMMAND ----------
 
+# Remaining archive files in destination (nested archives from 7z extractions)
+files_in_dest = os.listdir(destination)
+rar_files = [f for f in files_in_dest if f.endswith(".rar")]
+sevenz_files = [f for f in files_in_dest if f.endswith(".7z")]
+zip_files = [f for f in files_in_dest if f.endswith(".zip")]
+print(f"Before cleanup - rar: {len(rar_files)}, 7z: {len(sevenz_files)}, zip: {len(zip_files)}")
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Extract nested archives in destination (.7z, .rar, .zip)
+# Extract .7z files
+for file in tqdm(sevenz_files, desc="Extracting .7z"):
+    filepath = f"{destination}/{file}"
+    try:
+        with py7zr.SevenZipFile(filepath, mode='r') as z:
+            z.extractall(path=destination)
+    except py7zr.Bad7zFile:
+        try:
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                zip_ref.extractall(destination)
+        except Exception:
+            print(f"\u26a0\ufe0f Could not extract: {file}")
+            continue
+    os.remove(filepath)
+
+# Extract .rar files
+for file in tqdm(rar_files, desc="Extracting .rar"):
+    filepath = f"{destination}/{file}"
+    try:
+        patoolib.extract_archive(filepath, outdir=destination)
+    except Exception as e:
+        print(f"\u26a0\ufe0f Could not extract {file}: {e}")
+        continue
+    os.remove(filepath)
+
+# Extract any .zip files (including new ones from nested archives)
+files_in_dest = os.listdir(destination)
+zip_files = [f for f in files_in_dest if f.endswith(".zip")]
+broken = ['Valzonal_20180901.zip', 'Valzonal_20180902.zip']
+for file in tqdm(zip_files, desc="Extracting .zip"):
+    filepath = f"{destination}/{file}"
+    if file in broken:
+        os.remove(filepath)
+        continue
+    try:
+        with zipfile.ZipFile(filepath, 'r') as zip_ref:
+            zip_ref.extractall(destination)
+    except zipfile.BadZipFile:
+        print(f"\u26a0\ufe0f Bad zip: {file}")
+        continue
+    os.remove(filepath)
+
+# Final check
+files_in_dest = os.listdir(destination)
+nrars = len([f for f in files_in_dest if f.endswith(".rar")])
+n7z = len([f for f in files_in_dest if f.endswith(".7z")])
+nzip = len([f for f in files_in_dest if f.endswith(".zip")])
+print(f"\nAfter cleanup - rar: {nrars}, 7z: {n7z}, zip: {nzip}")
+assert nrars == 0
+assert n7z == 0
+assert nzip == 0
+
+# COMMAND ----------
+
+files = [f for f in files_in_dest if os.path.isfile(os.path.join(destination, f))]
+dirs =  [f for f in files_in_dest if os.path.isdir(os.path.join(destination, f))]
+print(f"Files in destination (top-level): {len(files)}, Subdirectories: {len(dirs)}")
+
+
+# COMMAND ----------
+
+for d in dirs:
+    print("-------------------------")
+    print(d)
+    print("-------------------------")
+    print(os.listdir(destination + "/" + d))
+
+# COMMAND ----------
+
+dirs
 
 # COMMAND ----------
 
