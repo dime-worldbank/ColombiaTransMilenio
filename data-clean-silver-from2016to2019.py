@@ -699,18 +699,30 @@ plt.show()
 # DBTITLE 1,Cell 17
 numvars = ['cardnumber', 'balance_before', 'value', 'balance_after']
 
-# For each numvar, check that it contains no letters, then destring to double
+# ── Parseability check ────────────────────────────────────────────────────────
+# For each numvar: count rows whose raw value is non-null/non-empty but cannot
+# be parsed to a number, and show what those raw values look like.
 for numvar in numvars:
-    print(f"── {numvar} value check ──")
-    display(
+    bad = (
         df_with_parsed_dates
-        .select(numvar)
-        .filter(~F.col(numvar).rlike("[A-Za-z]") | F.col(numvar).isNull())
-        .withColumn(f"{numvar}_double", F.col(numvar).cast("double"))
-        .groupBy(numvar, f"{numvar}_double")
-        .count()
-        .orderBy(numvar)
+        .filter(F.col(numvar).isNotNull() & (F.trim(F.col(numvar)) != ""))
+        .filter(F.col(numvar).cast("double").isNull())
     )
+    n_bad = bad.count()
+    print(f"── {numvar}: non-parseable non-null values: {n_bad:,}")
+    if n_bad > 0:
+        display(bad.groupBy(numvar).count().orderBy(F.col("count").desc()).limit(20))
+
+# ── value distribution ────────────────────────────────────────────────────────
+# value has low cardinality (a handful of fares), so the full distribution is
+# worth eyeballing — it doubles as an early look for the fare×period table (B3/E5).
+display(
+    df_with_parsed_dates
+    .withColumn("value_double", F.col("value").cast("double"))
+    .groupBy("value", "value_double")
+    .count()
+    .orderBy(F.col("count").desc())
+)
 
 # COMMAND ----------
 
@@ -849,6 +861,37 @@ _profile_map = {**{v: v for v in _profile_canonical}, **_profile_variants}
 card_profile_expr = F.lit(None).cast("string")
 for raw, canonical in _profile_map.items():
     card_profile_expr = F.when(F.trim(F.col("account_name")) == raw, F.lit(canonical)).otherwise(card_profile_expr)
+
+# COMMAND ----------
+
+# DBTITLE 1,Categorical map coverage check
+# ── For each mapped categorical ──────────────────────────────────────────────
+# (1) full table raw value × mapped result (low cardinality, readable in full;
+#     rows where the map returns NULL are sorted first), and
+# (2) count of unmapped non-null raw values → candidates to add to the map.
+# line/station/etc. only get trim (thousands of values, no dictionary) — not checked here.
+cat_maps = {
+    "emisor":       ("issuer_id", issuer_expr),
+    "operator":     ("operator_id", operator_expr),
+    "card_type":    ("card_type_id", card_type_expr),
+    "account_name": ("card_profile", card_profile_expr),
+}
+
+for raw_col, (clean_name, expr) in cat_maps.items():
+    print(f"\n{'='*70}\n{raw_col} → {clean_name}\n{'='*70}")
+    df_tmp = df_with_parsed_dates.withColumn(clean_name, expr)
+    display(
+        df_tmp
+        .groupBy(raw_col, clean_name)
+        .count()
+        .orderBy(F.col(clean_name).isNull().desc(), F.col("count").desc())
+    )
+    n_unmapped = (
+        df_tmp
+        .filter(F.col(clean_name).isNull() & F.col(raw_col).isNotNull() & (F.trim(F.col(raw_col)) != ""))
+        .count()
+    )
+    print(f"Unmapped non-null raw values: {n_unmapped:,} rows")
 
 # COMMAND ----------
 
