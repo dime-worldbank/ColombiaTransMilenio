@@ -1,5 +1,6 @@
 # Databricks notebook source
 # WINDOWS
+policy = dt.datetime(2017, 4, 1, tzinfo = timezone)
 
 # window by cardnumber
 user_window = Window\

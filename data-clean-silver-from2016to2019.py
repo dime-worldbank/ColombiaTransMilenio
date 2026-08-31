@@ -1,4 +1,36 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
+# DBTITLE 1,Index
+# MAGIC %md
+# MAGIC ## Index
+# MAGIC
+# MAGIC 1. **Setup** — Import packages and select catalog/schema
+# MAGIC 2. **Define Bronze Table** — Inspect columns of `bronze_validaciones_from2016to2019`
+# MAGIC 3. **Ingestion Diagnostics**
+# MAGIC    - Control table completeness (missing or broken files)
+# MAGIC    - Character encoding issues in `fecha_transaccion`
+# MAGIC    - Duplicate ingestion check
+# MAGIC    - Raw row count vs bronze
+# MAGIC 4. **Transaction Dates** — Format mapping and cleaning (`fecha_transaccion`, `clearing_date`)
+# MAGIC 5. **Exploratory Visualizations**
+# MAGIC    - Day-of-month heatmap (month × day) using `clearing_date`
+# MAGIC    - Daily transaction line plots (both date columns)
+# MAGIC 6. **Numeric Variables** — Validation and casting of `cardnumber`, `balance_before`, `value`, `balance_after`
+# MAGIC 7. **Categorical Variables** — Frequency counts for `card_type`
+# MAGIC 8. **Consolidation** — Chain all transformations into `df_silver`
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 1: Setup
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 1. Setup
+
+# COMMAND ----------
+
 # DBTITLE 1,Import Packages
 from pyspark.sql import functions as F
 import pandas as pd
@@ -30,10 +62,24 @@ import calendar
 
 # COMMAND ----------
 
+# DBTITLE 1,Section 2: Define Bronze Table
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 2. Define Bronze Table
+
+# COMMAND ----------
+
 # DBTITLE 1,Define Bronze Table and Inspect Columns
 BRONZE_TABLE  = "prd_mega.scolom15.bronze_validaciones_from2016to2019"
 # Inspect Columns of BRONZE_TABLE
 spark.table(BRONZE_TABLE).columns
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 3: Ingestion Diagnostics
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 3. Ingestion Diagnostics
 
 # COMMAND ----------
 
@@ -48,11 +94,12 @@ CONTROL_TABLE = "prd_mega.scolom15.file_classification_from2016to2019"
 # ── 1. Control table vs bronze file counts ────────────────────────────────────
 in_bronze = spark.table(BRONZE_TABLE).select("_source_file").distinct().count()
 in_control = spark.table(CONTROL_TABLE).select("raw_filepath").distinct().count()
-in_control_broken = (
+df_broken = (
     spark.table(CONTROL_TABLE)
     .filter(F.col("classification_status") == "broken")
-    .count()
+
 )
+in_control_broken = df_broken.count()
 
 print(f"Files in CONTROL_TABLE : {in_control}")
 print(f"  └─ broken            : {in_control_broken}")
@@ -65,53 +112,67 @@ else:
     print(f"⚠️  Mismatch! {in_control - in_control_broken - in_bronze} files missing from bronze.")
 
 # Show broken file reasons
-print("\n── Broken files breakdown ──")
+print("\n── Broken files breakdown by reason ──")
 display(
-    spark.table(CONTROL_TABLE)
-    .filter(F.col("classification_status") == "broken")
+    df_broken
     .groupBy("detection_notes")
     .count()
     .orderBy(F.col("count").desc())
 )
 
+# List each broken file with its reason
+print("\n── Broken files list ──")
+display(
+    df_broken
+    .select("raw_filepath", "detection_notes")
+    .orderBy("raw_filepath")
+)
+
+
 # COMMAND ----------
 
 # DBTITLE 1,Ingestion diagnostics: character encoding issues
-# ── 2. Rows with non-normal characters in fecha_transaccion ───────────────────
+# ──  Rows with non-normal characters in fecha_transaccion ───────────────────
 # Detect letters other than 'UTC' — indicates encoding corruption
 
 df_bronze = spark.table(BRONZE_TABLE)
 
-# Remove 'UTC' then check for remaining letters
-weird_char_count = (
+# Remove 'UTC' then check for remaining letters — filter once and cache
+df_weird = (
     df_bronze
     .filter(
         F.regexp_replace(F.col("fecha_transaccion"), "(?i)UTC", "")
          .rlike("[A-Za-z]")
     )
-    .count()
+
 )
+weird_char_count = df_weird.count()
 
 print(f"Rows with non-normal characters in fecha_transaccion: {weird_char_count:,}")
 if weird_char_count > 0:
     print("Sample of affected rows:")
     display(
-        df_bronze
-        .filter(
-            F.regexp_replace(F.col("fecha_transaccion"), "(?i)UTC", "")
-             .rlike("[A-Za-z]")
-        )
+        df_weird
         .select("_source_file", "fecha_transaccion")
         .distinct()
         .limit(20)
     )
+    # List affected files with row counts
+    print("\n── Affected files ──")
+    display(
+        df_weird
+        .groupBy("_source_file")
+        .count()
+        .orderBy(F.col("count").desc())
+    )
 else:
     print("✅ No encoding issues detected.")
+
 
 # COMMAND ----------
 
 # DBTITLE 1,Ingestion diagnostics: duplicate ingestion check
-# ── 3. Check for duplicate ingestion (same content loaded twice) ──────────────
+# ──  Check for duplicate ingestion (same content loaded twice) ──────────────
 # ⚠️ This is expensive (countDistinct per file across all content columns).
 # Set to False to skip.
 RUN_DUPLICATE_CHECK = False
@@ -148,7 +209,7 @@ else:
 # COMMAND ----------
 
 # DBTITLE 1,Ingestion diagnostics: raw row count vs bronze
-# ── 4. Raw file row counts vs bronze (for specified files) ────────────────────
+# ── Raw file row counts vs bronze (for specified files) ────────────────────
 # EDIT THIS LIST to check specific files of interest:
 files_to_verify = []
 
@@ -202,24 +263,33 @@ else:
 
 # COMMAND ----------
 
-# List date variables 
-date_vars = ["fecha_transaccion", "clearing_date"]
-
-
+# DBTITLE 1,Section 4: Transaction Dates
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 4. Transaction Dates
 
 # COMMAND ----------
 
-# DBTITLE 1,Transaction Date: Mapping
-# List date variables 
+# DBTITLE 1,Transaction Dates: Classification, Parsing & Diagnostics
+# ══════════════════════════════════════════════════════════════════════════════
+# TRANSACTION DATES: Format classification, parsing & diagnostics
+# Consolidates mapping + cleaning into a single pass.
+# Produces df_with_parsed_dates (used by downstream cells).
+# NOTE: clearing_date is date-only in the source — no timestamp generated for it.
+#
+# Renames:
+#   fecha_transaccion  → fecha_transaccion_string   (original string preserved)
+#   clearing_date      → clearing_date_string        (original string preserved)
+#
+# New columns (3):
+#   fecha_transaccion           (date)       — parsed date
+#   clearing_date               (date)       — parsed date
+#   fecha_transaccion_timestamp (timestamp)  — parsed timestamp (only fecha_transaccion has time)
+# ══════════════════════════════════════════════════════════════════════════════
+
 date_vars = ["fecha_transaccion", "clearing_date"]
 
-# Build df_with_type_fecha ONCE with both type columns.
-# First, trim whitespace from date columns (handles cases like "14-06-2018 ")
-df_with_type_fecha = spark.table(BRONZE_TABLE).withColumns(
-    {var: F.trim(F.col(var)) for var in date_vars}
-)
-
-# Classify the format of each date variable
+# ── Format classifier ─────────────────────────────────────────────────────────
 def _classify_date_format(col_name):
     return (
         F.when(F.col(col_name).rlike(r"^(2016|2017|2018|2019)\d{10}$"), F.lit("YYYYMMDDHHmmss"))
@@ -237,39 +307,7 @@ def _classify_date_format(col_name):
         .otherwise(F.lit("unknown"))
     )
 
-df_with_type_fecha = df_with_type_fecha.withColumns(
-    {f"type_{var}": _classify_date_format(var) for var in date_vars}
-)
-
-# Display exploration for each variable
-for var in date_vars:
-    print(f"\n{'='*60}\nVariable: {var}\n{'='*60}")
-    display(
-        df_with_type_fecha
-        .select(var, f"type_{var}")
-        .orderBy(F.col("balance_after").desc())
-        .limit(10)
-    )
-
-    # Count unknowns
-    unknown_ft = df_with_type_fecha.filter(F.col(f"type_{var}") == "unknown").count()
-    print(f"Number of unknown type_{var}: {unknown_ft}")
-
-    if unknown_ft > 0:
-        display(
-            df_with_type_fecha
-            .select(var)
-            .where(F.col(f"type_{var}") == "unknown")
-            .orderBy(F.col(var).desc())
-            .limit(10)
-        )
-
-
-# COMMAND ----------
-
-# DBTITLE 1,Transaction Date: Cleaning
-# Time-bearing formats: populate both _timestamp and _date
-# Date-only formats:  leave _timestamp null, populate only _date
+# ── Spark format strings for parsing ─────────────────────────────────────────
 _time_formats = {
     "YYYYMMDDHHmmss":          "yyyyMMddHHmmss",
     "YYYY/MM/DD HH:mm:ss":     "yyyy/MM/dd HH:mm:ss",
@@ -287,63 +325,89 @@ _date_only_formats = {
     "DD/MM/YYYY":  "dd/MM/yyyy",
 }
 
-# Build all timestamp/date columns cumulatively on the unified df_with_type_fecha
-# (which already has trimmed values + both type_fecha_transaccion and type_clearing_date)
-df_with_transaction_date = df_with_type_fecha
-
-# Rename original string columns to *_string so parsed columns get the clean names
-for var in date_vars:
-    df_with_transaction_date = df_with_transaction_date.withColumnRenamed(var, f"{var}_string")
-
-for var in date_vars:
-    # _timestamp: only for time-bearing formats
-    ts_expr = F.lit(None).cast("timestamp")
+def _build_ts_expr(string_col, type_col):
+    """Timestamp expression — only for time-bearing formats."""
+    expr = F.lit(None).cast("timestamp")
     for label, fmt in _time_formats.items():
-        ts_expr = F.when(F.col(f"type_{var}") == label,
-                         F.to_timestamp(F.col(f"{var}_string"), fmt)).otherwise(ts_expr)
+        expr = F.when(F.col(type_col) == label,
+                      F.to_timestamp(F.col(string_col), fmt)).otherwise(expr)
+    return expr
 
-    # parsed date: always populated when format is known
-    dt_expr = F.lit(None).cast("date")
-    for label, fmt in _time_formats.items():
-        dt_expr = F.when(F.col(f"type_{var}") == label,
-                         F.to_date(F.col(f"{var}_string"), fmt)).otherwise(dt_expr)
-    for label, fmt in _date_only_formats.items():
-        dt_expr = F.when(F.col(f"type_{var}") == label,
-                         F.to_date(F.col(f"{var}_string"), fmt)).otherwise(dt_expr)
+def _build_dt_expr(string_col, type_col):
+    """Date expression — populated for all known formats."""
+    expr = F.lit(None).cast("date")
+    for label, fmt in {**_time_formats, **_date_only_formats}.items():
+        expr = F.when(F.col(type_col) == label,
+                      F.to_date(F.col(string_col), fmt)).otherwise(expr)
+    return expr
 
-    df_with_transaction_date = (
-        df_with_transaction_date
-        .withColumn(f"{var}_timestamp", ts_expr)
-        .withColumn(var, dt_expr)  # clean name for the parsed date
+# ── Step 1: Trim + classify formats ──────────────────────────────────────────
+df_classified = (
+    spark.table(BRONZE_TABLE)
+    .withColumns({var: F.trim(F.col(var)) for var in date_vars})
+    .withColumns({f"type_{var}": _classify_date_format(var) for var in date_vars})
+)
+
+# ── Step 2: Diagnostics — format distribution & unknowns ─────────────────────
+for var in date_vars:
+    print(f"\n{'='*60}\nVariable: {var}\n{'='*60}")
+    display(
+        df_classified
+        .groupBy(f"type_{var}")
+        .count()
+        .orderBy(F.col("count").desc())
     )
 
-# Preview and sanity check for each variable
-for var in date_vars:
-    types = df_with_transaction_date.select(f"type_{var}").distinct().collect()
-    print(f"\n{'='*60}\n{var} — formats found: {[r[0] for r in types]}\n{'='*60}")
-#    Uncomment for checking that all different formats look ok
-#    for t in types:
-#        display(
-#            df_with_transaction_date
-#            .select(var, f"type_{var}", f"{var}_timestamp", f"{var}_date")
-#            .filter(F.col(f"type_{var}") == t[0])
-#            .orderBy(F.col(f"{var}_date").desc())
-#            .limit(10)
-#        )
+    unknown_count = df_classified.filter(F.col(f"type_{var}") == "unknown").count()
+    print(f"Unknown format rows: {unknown_count}")
 
-    null_ts = df_with_transaction_date.filter(F.col(f"{var}_timestamp").isNull()).count()
-    null_dt = df_with_transaction_date.filter(F.col(var).isNull()).count()
-    total   = df_with_transaction_date.count()
+    if unknown_count > 0:
+        display(
+            df_classified
+            .select(var)
+            .where(F.col(f"type_{var}") == "unknown")
+            .orderBy(F.col(var).desc())
+            .limit(10)
+        )
+
+# ── Step 3: Parse all dates in a single withColumns pass ─────────────────────
+# All expressions evaluate against the original schema, so reading var (string)
+# and overwriting var (parsed date) in the same dict is safe.
+df_with_parsed_dates = df_classified.withColumns({
+    # Preserve original strings
+    **{f"{var}_string": F.col(var) for var in date_vars},
+    # Timestamp only for fecha_transaccion (clearing_date is date-only in source)
+    "fecha_transaccion_timestamp": _build_ts_expr("fecha_transaccion", "type_fecha_transaccion"),
+    # Parsed dates (overwrites original string columns with proper date type)
+    **{var: _build_dt_expr(var, f"type_{var}") for var in date_vars},
+})
+
+# ── Step 4: Sanity check — null counts ───────────────────────────────────────
+total = df_with_parsed_dates.count()
+for var in date_vars:
+    types = df_with_parsed_dates.select(f"type_{var}").distinct().collect()
+    print(f"\n{'='*60}\n{var} — formats found: {[r[0] for r in types]}\n{'='*60}")
+    null_dt = df_with_parsed_dates.filter(F.col(var).isNull()).count()
     print(f"Total rows          : {total:,}")
-    print(f"Null {var}_timestamp : {null_ts:,}  ({100*null_ts/total:.1f}%)  ← expected for date-only rows")
     print(f"Null {var} (date)    : {null_dt:,}  ({100*null_dt/total:.1f}%)  ← should be 0 or only 'unknown' rows")
+    if var == "fecha_transaccion":
+        null_ts = df_with_parsed_dates.filter(F.col("fecha_transaccion_timestamp").isNull()).count()
+        print(f"Null {var}_timestamp : {null_ts:,}  ({100*null_ts/total:.1f}%)  ← only 'unknown' rows expected")
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 5: Exploratory Visualizations
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 5. Exploratory Visualizations
 
 # COMMAND ----------
 
 # DBTITLE 1,Heatmap of Days
 # ── 1. Aggregate to daily counts ─────────────────────────────────────────────
 daily_pd = (
-    df_with_transaction_date
+    df_with_parsed_dates
     .filter(F.col("clearing_date").isNotNull())
     .groupBy("clearing_date")
     .count()
@@ -423,10 +487,6 @@ plt.show()
 # COMMAND ----------
 
 # DBTITLE 1,Daily transactions line plots (clearing_date + fecha_transaccion)
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import pandas as pd
-import numpy as np
 
 # ── 1. Build full calendar for clearing_date ──────────────────────────────────
 daily_pd["clearing_date"] = pd.to_datetime(
@@ -441,7 +501,7 @@ full_df = pd.DataFrame({"date": full_range}).merge(
 
 # ── 2. Build full calendar for fecha_transaccion ──────────────────────────────
 daily_tx_pd = (
-    df_with_transaction_date
+    df_with_parsed_dates
     .filter(F.col("fecha_transaccion").isNotNull())
     .groupBy("fecha_transaccion")
     .count()
@@ -491,27 +551,21 @@ plt.show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Section 6: Numeric Variables
 # MAGIC %md
-# MAGIC  'cardnumber',
-# MAGIC  'balance_before',
-# MAGIC  'value',
-# MAGIC  'balance_after',
-# MAGIC  'system',
-# MAGIC  'day_group_type',
-# MAGIC  '_source_file',
-# MAGIC  '_header_group',
-# MAGIC  '_transform_format',
-# MAGIC  '_ingestion_ts']
+# MAGIC ---
+# MAGIC ## 6. Numeric Variables
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 17
 numvars = ['cardnumber', 'balance_before', 'value', 'balance_after']
 
 # For each numvar, check that it contains no letters, then destring to double
 for numvar in numvars:
     print(f"── {numvar} value check ──")
     display(
-        df_with_transaction_date
+        df_with_parsed_dates
         .select(numvar)
         .filter(~F.col(numvar).rlike("[A-Za-z]") | F.col(numvar).isNull())
         .withColumn(f"{numvar}_double", F.col(numvar).cast("double"))
@@ -522,16 +576,19 @@ for numvar in numvars:
 
 # COMMAND ----------
 
+# DBTITLE 1,Section 7: Categorical Variables
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 7. Categorical Variables
+
+# COMMAND ----------
+
 # Count how many time each value appears
 spark.table(BRONZE_TABLE).select('card_type').groupBy('card_type').count().display()
 
 
 # COMMAND ----------
 
-# DBTITLE 1,Consolidate all cleaning into df_silver
-# ══════════════════════════════════════════════════════════════════════════════
-# CONSOLIDATION: chain ALL cleaning transformations into a single df_silver
-# ══════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Issuer ─────────────────────────────────────────────────────────────────
 _issuer_map = {
@@ -579,9 +636,24 @@ card_type_expr = F.lit(None).cast("string")
 for prefix, canonical in _card_type_map.items():
     card_type_expr = F.when(F.col("card_type").contains(prefix), F.lit(canonical)).otherwise(card_type_expr)
 
+# COMMAND ----------
+
+# DBTITLE 1,Section 8: Consolidation
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 8. Consolidation
+
+# COMMAND ----------
+
+# DBTITLE 1,Consolidate all cleaning into df_silver
+# ══════════════════════════════════════════════════════════════════════════════
+# CONSOLIDATION: chain ALL cleaning transformations into a single df_silver
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 # ── 4. Build df_silver with all transformations ───────────────────────────────
 df_silver = (
-    df_with_transaction_date
+    df_with_parsed_dates
     # Categorical mappings
     .withColumn("issuer_id", issuer_expr)
     .withColumn("operator_id", operator_expr)
@@ -607,7 +679,6 @@ df_silver = (
         # Date columns (already cleaned)
         "fecha_transaccion_timestamp",
         "fecha_transaccion",
-        "clearing_date_timestamp",
         "clearing_date",
         # Cleaned categorical columns
         "issuer_id",
