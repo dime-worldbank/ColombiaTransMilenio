@@ -397,6 +397,144 @@ for var in date_vars:
 
 # COMMAND ----------
 
+# DBTITLE 1,Source files covering Oct 2016 – Sep 2017 (completeness check)
+# ── List source files with clearing_date in the analysis window ──────────────
+# Goal: verify completeness of the Oct 2016 – Sep 2017 window by listing which
+# raw files contribute rows to it (check this list against the expected files).
+# Uses the parsed clearing_date from df_with_parsed_dates (Section 4).
+WINDOW_START = "2016-10-01"
+WINDOW_END   = "2017-09-30"   # inclusive
+
+df_window = df_with_parsed_dates.filter(
+    F.col("clearing_date").between(WINDOW_START, WINDOW_END)
+)
+
+files_window = (
+    df_window
+    .groupBy("_source_file")
+    .agg(
+        F.count("*").alias("rows_in_window"),
+        F.min("clearing_date").alias("min_clearing_date"),
+        F.max("clearing_date").alias("max_clearing_date"),
+        F.countDistinct("clearing_date").alias("distinct_days"),
+    )
+    .orderBy("min_clearing_date", "_source_file")
+)
+
+print(f"Source files with clearing_date in [{WINDOW_START}, {WINDOW_END}]: {files_window.count()}")
+display(files_window)
+
+# Days in the window with no rows at all (quick completeness check)
+days_present = df_window.select("clearing_date").distinct()
+all_days = spark.sql(
+    f"SELECT explode(sequence(to_date('{WINDOW_START}'), to_date('{WINDOW_END}'), interval 1 day)) AS clearing_date"
+)
+missing_days = all_days.join(days_present, "clearing_date", "left_anti").orderBy("clearing_date")
+n_missing = missing_days.count()
+print(f"Days in window with zero rows: {n_missing}")
+if n_missing > 0:
+    display(missing_days)
+
+# COMMAND ----------
+
+# DBTITLE 1,Window files: expected monthly files vs extra files (duplicate check)
+# ══════════════════════════════════════════════════════════════════════════════
+# The Oct 2016 – Sep 2017 window is expected to come from 12 monthly files.
+# Other files (e.g. dated Sep 30 2017) also contribute rows with clearing_date
+# in the window. This cell checks whether those extra rows are duplicates of
+# the monthly files' content or genuinely new data.
+# How to read the results:
+#   - overlap pct ≈ 100%  → the extra file duplicates the monthly files: exclude it.
+#   - overlap pct ≈ 0%    → new data (e.g. late-clearing validations): investigate
+#                           before excluding — dropping it would lose real trips.
+#   - partial overlap     → mixed; look at the daily-volume table to see which days.
+# ══════════════════════════════════════════════════════════════════════════════
+
+MONTHLY_FILES = [
+    "10_ValidacionesOct2016.csv",
+    "11_ValidacionesNov2016.csv",
+    "12_ValidacionesDic2016.csv",
+    "01_ValidacionesEnero2017.csv",
+    "02_ValidacionesFeb2017.csv",
+    "03_ValidacionesMar2017.csv",
+    "04_ValidacionesAbr2017.csv",
+    "05_ValidacionesMay2017.csv",
+    "06_ValidacionesJun2017.csv",
+    "07_ValidacionesJul2017.csv",
+    "08_ValidacionesAgo2017.csv",
+    "09_ValidacionesSept2017.csv",
+]
+
+is_monthly = F.lit(False)
+for fname in MONTHLY_FILES:
+    is_monthly = is_monthly | F.col("_source_file").contains(fname)
+
+df_monthly_win = df_window.filter(is_monthly)
+df_extra_win   = df_window.filter(~is_monthly)
+
+# ── 1. Sanity: all 12 monthly files present in bronze? ───────────────────────
+found_monthly = [r[0] for r in df_monthly_win.select("_source_file").distinct().collect()]
+for fname in MONTHLY_FILES:
+    if not any(fname in f for f in found_monthly):
+        print(f"⚠️  Expected monthly file NOT found in window: {fname}")
+print(f"Monthly files found: {len(found_monthly)} / {len(MONTHLY_FILES)}")
+
+# ── 2. Extra files: who are they, what do they cover ─────────────────────────
+print("\n── Extra files with rows in the window ──")
+display(
+    df_extra_win
+    .groupBy("_source_file")
+    .agg(
+        F.count("*").alias("rows_in_window"),
+        F.min("clearing_date").alias("min_clearing"),
+        F.max("clearing_date").alias("max_clearing"),
+        F.min("fecha_transaccion").alias("min_tx_date"),
+        F.max("fecha_transaccion").alias("max_tx_date"),
+    )
+    .orderBy("_source_file")
+)
+
+# ── 3. Daily volume: monthly files vs extra files side by side ───────────────
+print("\n── Daily rows: monthly vs extra files (only days where extra files contribute) ──")
+display(
+    df_window
+    .groupBy("clearing_date")
+    .agg(
+        F.sum(F.when(is_monthly, 1).otherwise(0)).alias("rows_monthly_files"),
+        F.sum(F.when(~is_monthly, 1).otherwise(0)).alias("rows_extra_files"),
+    )
+    .filter(F.col("rows_extra_files") > 0)
+    .orderBy("clearing_date")
+)
+
+# ── 4. Exact-content overlap: are the extra rows already in the monthly files? ─
+# Compare on content columns only (exclude ingestion metadata).
+content_cols = [c for c in spark.table(BRONZE_TABLE).columns
+                if c not in ("_source_file", "_header_group", "_transform_format", "_ingestion_ts")]
+
+extra_content   = df_extra_win.select("_source_file", *content_cols)
+monthly_content = df_monthly_win.select(*content_cols).dropDuplicates()
+
+overlap = (
+    extra_content
+    .join(monthly_content, on=content_cols, how="left_semi")
+    .groupBy("_source_file")
+    .agg(F.count("*").alias("rows_also_in_monthly_files"))
+)
+
+totals = df_extra_win.groupBy("_source_file").agg(F.count("*").alias("rows_in_window"))
+
+print("\n── Overlap of extra files with monthly files (exact content match) ──")
+display(
+    totals
+    .join(overlap, "_source_file", "left")
+    .fillna(0, subset=["rows_also_in_monthly_files"])
+    .withColumn("overlap_pct", F.round(100 * F.col("rows_also_in_monthly_files") / F.col("rows_in_window"), 2))
+    .orderBy("_source_file")
+)
+
+# COMMAND ----------
+
 # DBTITLE 1,Section 5: Exploratory Visualizations
 # MAGIC %md
 # MAGIC ---
@@ -576,6 +714,20 @@ for numvar in numvars:
 
 # COMMAND ----------
 
+# DBTITLE 1,Consolidated numeric casts (A3)
+# ── Numeric cast expressions, applied in the consolidation (Section 8) ────────
+# cardnumber → long via decimal (a double would lose precision on long card ids;
+# the decimal step tolerates values like "123.0"). value/balances → double.
+# Garbage values (letters etc.) become NULL — counted in the consolidation checks.
+_numeric_casts = {
+    "cardnumber":     F.col("cardnumber").cast("decimal(38,0)").cast("long"),
+    "balance_before": F.col("balance_before").cast("double"),
+    "value":          F.col("value").cast("double"),
+    "balance_after":  F.col("balance_after").cast("double"),
+}
+
+# COMMAND ----------
+
 # DBTITLE 1,Section 7: Categorical Variables
 # MAGIC %md
 # MAGIC ---
@@ -638,10 +790,95 @@ for prefix, canonical in _card_type_map.items():
 
 # COMMAND ----------
 
+# DBTITLE 1,Card profile (account_name) canonical map — A4
+# ── 4. Card profile (account_name) ────────────────────────────────────────────
+# 1-to-1 cleaning map (see CLEANING_DECISIONS_2017.md, A4 notes): keys are the
+# exact TRIMMED raw strings found in bronze (distinct values checked 2026-08-31).
+# It only fixes encoding corruption and truncated values — no detail is lost;
+# the analytical grouping of profiles happens later (E10 profile_group).
+# NOTE: the parenthesis code is AMBIGUOUS for this variable ((001), (003), (006),
+# (029) each cover two different profiles), so the map keys on the FULL string.
+# Unmapped values fall to NULL and are counted in the consolidation checks.
+
+_profile_canonical = [
+    "(001) Adulto",
+    "(001) Anonymous",
+    "(002) Adulto Mayor",
+    "(003) Capital",
+    "(003) Estudiantil",
+    "(004) Menor de Edad",
+    "(005) Discapacidad",
+    "(006) Apoyo Ciudadano",
+    "(006) Discapacitados",
+    "(008) Étnico",
+    "(014) Usuario frecuente",
+    "(017) Discapacitado Monedero",
+    "(018) Universitaria",
+    "(021) Tarjeta Ciudadana",
+    "(022) Empresarial TM",
+    "(023) Empresarial Davivienda",
+    "(024) Empresarial Colsubsidio",
+    "(025) Empresarial Compensar",
+    "(026) Empresarial AV Villas",
+    "(027) Club Universitario",
+    "(029) Empresarial Banco de Bogotá",
+    "(030) Capital monedero",
+    "(032) Empresarial Daviplata",
+    "(033) Empresarial People Pass",
+    "(035) Empresarial AV Villas Crédito",
+    "(036) Empresarial Colpatria",
+    "(041) Empresarial Cercanos",
+    "(044) Empresarial CIS",
+    "(101) Adulto PV",
+]
+
+_profile_variants = {
+    # encoding-corrupted strings → same canonical as their clean versions
+    "(029) Empresarial Banco de BogotÃ¡":   "(029) Empresarial Banco de Bogotá",
+    "(029) Empresarial Banco de Bogot‡":    "(029) Empresarial Banco de Bogotá",
+    "(035) Empresarial AV Villas CrÃ©dito": "(035) Empresarial AV Villas Crédito",
+    # truncated code-only values → the unique profile matching that code
+    "(005)": "(005) Discapacidad",
+    "(004)": "(004) Menor de Edad",
+    "(101)": "(101) Adulto PV",
+    # "(000)", "1" have no matching profile: left unmapped → NULL
+}
+
+_profile_map = {**{v: v for v in _profile_canonical}, **_profile_variants}
+
+card_profile_expr = F.lit(None).cast("string")
+for raw, canonical in _profile_map.items():
+    card_profile_expr = F.when(F.trim(F.col("account_name")) == raw, F.lit(canonical)).otherwise(card_profile_expr)
+
+# COMMAND ----------
+
 # DBTITLE 1,Section 8: Consolidation
 # MAGIC %md
 # MAGIC ---
 # MAGIC ## 8. Consolidation
+
+# COMMAND ----------
+
+# DBTITLE 1,Exclude duplicate re-delivery files (H10)
+# ── Files confirmed as duplicate re-deliveries ────────────────────────────────
+# The ~10 files dated Sep 30 2017 duplicate the monthly files' content:
+# ~100% of their rows match a monthly-file row on card + exact timestamp
+# (see CLEANING_DECISIONS_2017.md, H10). They are excluded from silver entirely.
+# TODO: paste the file names from the "Window files" diagnostic cell output.
+EXCLUDED_SOURCE_FILES = [
+    # "example_file_dated_2017-09-30.csv",
+]
+
+if EXCLUDED_SOURCE_FILES:
+    _is_excluded = F.lit(False)
+    for fname in EXCLUDED_SOURCE_FILES:
+        _is_excluded = _is_excluded | F.col("_source_file").contains(fname)
+    n_excluded = df_with_parsed_dates.filter(_is_excluded).count()
+    print(f"Excluding {len(EXCLUDED_SOURCE_FILES)} files, {n_excluded:,} rows.")
+    df_for_silver = df_with_parsed_dates.filter(~_is_excluded)
+else:
+    print("⚠️  EXCLUDED_SOURCE_FILES is empty — no files excluded yet (paste the Sep-30 file names).")
+    df_for_silver = df_with_parsed_dates
 
 # COMMAND ----------
 
@@ -653,11 +890,15 @@ for prefix, canonical in _card_type_map.items():
 
 # ── 4. Build df_silver with all transformations ───────────────────────────────
 df_silver = (
-    df_with_parsed_dates
+    df_for_silver
     # Categorical mappings
     .withColumn("issuer_id", issuer_expr)
     .withColumn("operator_id", operator_expr)
     .withColumn("card_type_id", card_type_expr)
+    # Card profile canonical map (A4) — keep raw account_name alongside
+    .withColumn("card_profile", card_profile_expr)
+    # Numeric casts (A3) — overwrite in place; raw strings remain in bronze
+    .withColumns(_numeric_casts)
     # Trim + remove trailing slashes
     .withColumn("line_id", F.regexp_replace(F.trim(F.col("line")), r"/$", ""))
     .withColumn("station_id", F.regexp_replace(F.trim(F.col("station")), r"/$", ""))
@@ -694,12 +935,15 @@ df_silver = (
         "fare_type_id",
         "card_type_id",
         "vehicle_type_id",
-        # Numeric / pass-through columns (keep as-is for now)
+        # Card profile: canonical (A4 map) + raw string preserved
+        "card_profile",
         "account_name",
+        # Numeric columns (cast in A3: cardnumber long, others double)
         "cardnumber",
         "balance_before",
         "value",
         "balance_after",
+        # Pass-through columns
         "system",
         "day_group_type",
         # Metadata
@@ -715,3 +959,36 @@ print(f"df_silver columns: {len(df_silver.columns)}")
 print(f"Schema:")
 df_silver.printSchema()
 print(f"\nRow count: {df_silver.count():,}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Consolidation checks: NULLs introduced by casts and maps
+# ── Rows where the raw value existed but the clean version is NULL ────────────
+# For numerics: garbage that failed the cast (checked on the pre-cast dataframe,
+# since df_silver overwrites the columns in place). For card_profile: raw values
+# not covered by the A4 map (expected: "(000)" ~35 rows, "1" 1 row — anything
+# else means a new unmapped value appeared and the map needs updating).
+for raw_col, cast_expr in _numeric_casts.items():
+    n = (
+        df_for_silver
+        .filter(cast_expr.isNull() & F.col(raw_col).isNotNull() & (F.trim(F.col(raw_col)) != ""))
+        .count()
+    )
+    print(f"{raw_col:<16} cast to NULL with non-null raw: {n:,}")
+
+n_profile = (
+    df_silver
+    .filter(F.col("card_profile").isNull() & F.col("account_name").isNotNull() & (F.trim(F.col("account_name")) != ""))
+    .count()
+)
+print(f"{'card_profile':<16} NULL with non-null raw (account_name): {n_profile:,}")
+
+# Show the unmapped raw profiles, if any
+print("\n── Unmapped account_name values (should be only (000) and '1') ──")
+display(
+    df_silver
+    .filter(F.col("card_profile").isNull() & F.col("account_name").isNotNull())
+    .groupBy("account_name")
+    .count()
+    .orderBy(F.col("count").desc())
+)
