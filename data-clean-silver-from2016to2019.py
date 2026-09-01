@@ -535,6 +535,63 @@ display(
 
 # COMMAND ----------
 
+# ── Loose-key overlap: same EVENT instead of same exact row ──────────────────
+# Match on normalized card + parsed transaction timestamp (+ station).
+norm = lambda c: F.upper(F.trim(F.col(c)))
+
+key_cols_3 = ["card_k", "ts_k", "station_k"]
+
+key_extra = df_extra_win.select(
+    "_source_file",
+    norm("cardnumber").alias("card_k"),
+    F.col("fecha_transaccion_timestamp").alias("ts_k"),
+    norm("station").alias("station_k"),
+)
+key_monthly = df_monthly_win.select(
+    norm("cardnumber").alias("card_k"),
+    F.col("fecha_transaccion_timestamp").alias("ts_k"),
+    norm("station").alias("station_k"),
+).dropDuplicates()
+
+# Rows without a parsed timestamp can never match — report them first
+n_null_ts = key_extra.filter(F.col("ts_k").isNull()).count()
+print(f"Extra rows with null parsed timestamp (can't match): {n_null_ts:,}")
+
+match_card_ts_station = (
+    key_extra.join(key_monthly, key_cols_3, "left_semi")
+    .groupBy("_source_file").agg(F.count("*").alias("match_card_ts_station"))
+)
+match_card_ts = (
+    key_extra.join(key_monthly.select("card_k", "ts_k").dropDuplicates(), ["card_k", "ts_k"], "left_semi")
+    .groupBy("_source_file").agg(F.count("*").alias("match_card_ts"))
+)
+
+display(
+    totals
+    .join(match_card_ts_station, "_source_file", "left")
+    .join(match_card_ts, "_source_file", "left")
+    .fillna(0, subset=["match_card_ts_station", "match_card_ts"])
+    .withColumn("pct_card_ts_station", F.round(100 * F.col("match_card_ts_station") / F.col("rows_in_window"), 2))
+    .withColumn("pct_card_ts",         F.round(100 * F.col("match_card_ts")         / F.col("rows_in_window"), 2))
+    .orderBy("_source_file")
+)
+
+
+# COMMAND ----------
+
+ex = key_extra.filter(F.col("ts_k").isNotNull()).limit(3).collect()[0]
+display(df_window.filter((norm("cardnumber") == ex["card_k"]) &
+                         (F.col("fecha_transaccion_timestamp") == ex["ts_k"]))
+        .select("_source_file", "station", "line", "value", "account_name", "balance_before", "balance_after"))
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Cell 18 (debug leftover)
+
+
+# COMMAND ----------
+
 # DBTITLE 1,Section 5: Exploratory Visualizations
 # MAGIC %md
 # MAGIC ---
