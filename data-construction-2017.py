@@ -12,7 +12,7 @@
 # MAGIC
 # MAGIC 1. **Setup** — packages, catalog, parameters
 # MAGIC 2. **Read window table** — input checks
-# MAGIC 3. **Card classification** — one profile group per card, `ever_*` flags
+# MAGIC 3. **Card classification** — one profile group per card (imputed profile), `ever_*` and `always_adulto` flags
 # MAGIC 4. **Fare table** — modal fares by profile group × fare period
 # MAGIC 5. **Subsidized trips** — `apoyo_trip` / `mayor_trip` per transaction
 # MAGIC 6. **Monthly outcomes** — trips and subsidized months per card × month → `monthly_outcomes_2017`
@@ -127,14 +127,14 @@ dist_months_expr = F.months_between(
 # MAGIC ---
 # MAGIC ## 3. Card classification
 # MAGIC
-# MAGIC A card gets a group only if all its non-anonymous records belong to exactly ONE profile group. Anonymous records never break this (trunk devices sometimes mis-record the profile as anonymous). Cards mixing two or more non-anonymous groups get no group — they cannot be classified and will get no treatment group.
+# MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous). A card gets a group only if all its non-anonymous records belong to exactly ONE profile group; anonymous records never break this for the treatment groups. Cards mixing two or more non-anonymous groups get no group — they cannot be classified and will get no treatment group. The comparison group is stricter: `always_adulto` marks cards that are adulto in EVERY transaction, with no anonymous records at all.
 
 # COMMAND ----------
 
-# DBTITLE 1,One profile group per card + ever_* flags
+# DBTITLE 1,One profile group per card + ever_* and always_adulto flags
 _non_anon_group = F.when(
-    F.col("profile_group").isNotNull() & (F.col("profile_group") != "anonymous"),
-    F.col("profile_group"),
+    F.col("profile_group_imputed").isNotNull() & (F.col("profile_group_imputed") != "anonymous"),
+    F.col("profile_group_imputed"),
 )
 
 df_cards_profile = (
@@ -143,7 +143,7 @@ df_cards_profile = (
     .groupBy("cardnumber")
     .agg(
         F.collect_set(_non_anon_group).alias("_groups"),
-        F.max((F.col("profile_group") == "anonymous").cast("int")).alias("has_anonymous"),
+        F.max((F.col("profile_group_imputed") == "anonymous").cast("int")).alias("has_anonymous"),
     )
     .withColumn("n_profile_groups", F.size("_groups"))
     .withColumn("profile_groups", F.concat_ws("+", F.array_sort("_groups")))
@@ -152,6 +152,10 @@ df_cards_profile = (
     .withColumn("ever_adulto", F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "adulto").cast("int")))
     .withColumn("ever_apoyo",  F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "apoyo").cast("int")))
     .withColumn("ever_mayor",  F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "mayor").cast("int")))
+    .withColumn(
+        "always_adulto",
+        F.when(F.col("n_profile_groups") == 1, ((F.col("card_group") == "adulto") & (F.col("has_anonymous") == 0)).cast("int")),
+    )
     .drop("_groups")
 )
 
@@ -160,6 +164,7 @@ display(
     df_cards_profile.agg(
         F.count(F.lit(1)).alias("cards"),
         F.sum("single_profile").alias("single_group"),
+        F.sum("always_adulto").alias("always_adulto"),
         F.sum(F.when(F.col("n_profile_groups") > 1, 1).otherwise(0)).alias("mixed_groups"),
         F.sum(F.when((F.col("n_profile_groups") == 0) & (F.col("has_anonymous") == 1), 1).otherwise(0)).alias("anonymous_only"),
         F.sum(F.when((F.col("n_profile_groups") == 0) & (F.col("has_anonymous") == 0), 1).otherwise(0)).alias("no_profile_at_all"),
@@ -515,7 +520,8 @@ df_cards_tags = (
 
 # DBTITLE 1,Treatment group and write T4
 # kept = subsidized before and after | lost = only before | gain = only after.
-# never = an adulto card with no subsidized month at all (the comparison group).
+# never = an always-adulto card (adulto in every transaction, never anonymous)
+# with no subsidized month at all (the comparison group).
 _z = lambda c: F.coalesce(F.col(c), F.lit(0))
 
 treatment_expr = F.lit(None).cast("string")
@@ -529,7 +535,7 @@ for g in ["apoyo", "mayor"]:
 treatment_expr = F.when(
     (_z("apoyo_m_in_6m_bef") == 0) & (_z("apoyo_m_in_18m_aft") == 0)
     & (_z("mayor_m_in_6m_bef") == 0) & (_z("mayor_m_in_18m_aft") == 0)
-    & (F.col("ever_adulto") == 1),
+    & (F.col("always_adulto") == 1),
     F.lit("never"),
 ).otherwise(treatment_expr)
 

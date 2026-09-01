@@ -39,7 +39,7 @@ One transaction-level clean **silver table**.
 | T1. Silver window | transaction | types & formats (1a) + Cleaning 1 applied (1b: dedup, empty rows dropped, duplicate source files excluded) + window filter (C1, by the 12 monthly filenames, applied as the last step; cleaning and diagnostics run over all of 2016–2019 before it — decided 2026-09-01) | analysis window (Oct 2016 – Sep 2017) |
 | T2. Window silver | transaction | T1 (already window-restricted) + Cleaning-2 tag columns (C2–C7) + Level-1 constructed columns (E2–E6) | all transactions in the window |
 | T3. Monthly outcomes | card×month, observed months only | `n_trips`, `has_trips`, `avg_daily_trips` (E10); `apoyo_month`, `mayor_month` (E11) | card-months with ≥1 transaction |
-| T4. Card-level dataset | card | `card_profile`/`profile_group`, `ever_*` (E12), presence flags (E13), spending windows (E14), subsidized-month counts pre/post (E15), treatment group (E16), cleaning-2 tags (C2–C7 aggregated), `first_active_month` | ALL cards in the window (allows sample in/out accounting) |
+| T4. Card-level dataset | card | `card_profile`/`profile_group` (imputed baseline, §D), `ever_*`/`always_adulto` (E12), presence flags (E13), spending windows (E14), subsidized-month counts pre/post (E15), treatment group (E16), cleaning-2 tags (C2–C7 aggregated), `first_active_month` | ALL cards in the window (allows sample in/out accounting) |
 | T5. Balanced panel | card×month, balanced grid | T3 joined onto the cards×months grid, zero-coded (E19); month-level vars (`dist_months`, `before`/`after`, `period`) computed from ymonth. **No card-level columns duplicated here** — merge from T4 at analysis time | export restricted to the analysis sample (see Level 4 note) |
 
 ## Codes
@@ -145,7 +145,7 @@ Separate notebook, producing a window-restricted silver table. **Its first step 
 Notes:
 * C3. `data-clean.py` (2020–2024) implemented a variant: > 100 in one day, OR > 20/day on **2+** days (old-code required **more than 2**, i.e. 3+). ⚠️ It also has a copy-paste bug: `more20swipes` is defined with `count > 100` (`data-clean.py:330-331`), so its second criterion actually flags 2+ days with >100 swipes, not >20 — the markdown there says >20 but the code does >100. The new implementation follows old-code's stated rule (>100 once, or >20 on more than 2 days), written correctly. If the 2022–2024 dataset built by `data-clean.py` is ever reused, that bug should be fixed there too.
 
-### D. The profile-switches problem (explanation + pending decision)
+### D. The profile-switches problem (explanation + decision)
 
 Summary of what old-code found:
 
@@ -172,10 +172,11 @@ Even though the production `clean()` body is lost, the downstream evidence point
 
 **Why it matters:** the profile defines the treatment groups (apoyo/mayor/adulto). Adulto cards will be the comparison group and we cannot risk including non-adulto cards there.
 
-**DECIDED (2026-08-31):**
- 1. **Baseline: original profile, NO imputation** — same as the sample analysis, which discarded `account_fixed` and used `card_profile` as recorded. Anonymous records are tolerated (see the exclusivity rule in E12): they don't change a card's classification, matching how the sample behaved.
+**DECIDED (2026-08-31, revised 2026-09-01):**
+ 1. **Baseline: imputed profile, rule (2)** ("future anonymous") — a transaction counts as anonymous if the card has ANY anonymous transaction from that moment on; card classification (E12) runs on this imputed profile. Revised 2026-09-01: this replaces the 2026-08-31 baseline (original profile, no imputation) — rule (2) is the rule the old production pipeline most likely ran and correctly represents cards that traveled anonymous before registering.
  2. Tag implausible and plausible switches per card, and check how many adulto cards carry an implausible switch.
- 3. **Robustness: rule (2)** ("future anonymous", the rule the old production pipeline most likely ran) — rebuild the classification with the imputed profile and compare. Additionally, excluding tagged switcher cards from the comparison group is a second robustness check.
+ 3. **Comparison group: always adulto** — a card qualifies for the comparison group only if it is adulto in EVERY transaction under the imputed profile (no anonymous records at all), stricter than the anonymous-tolerant `ever_adulto`. The treatment groups (apoyo/mayor) keep the anonymous tolerance of E12.
+ 4. **Robustness:** rebuild the classification with the original profile as recorded (the sample-analysis behavior, the pre-revision baseline) and compare. Additionally, excluding tagged switcher cards is a second robustness check — for the treatment groups only, since always-adulto comparison cards have no anonymous records and therefore no switches by construction.
 
 
 ## E. Phases 2–3 — Construction and aggregation (Spark), by output level
@@ -215,11 +216,11 @@ Note:
 
 | # | Step | Definition | Source | Verdict |
 |---|---|---|---|---|
-| E12 | `ever_*` per profile group + exclusivity | Sample-code: per-card max of dummies for {adulto, apoyo, mayor} only; if a card is "ever" more than one of the three, all set to missing (excluded). Mixtures with ANY other profile (anonymous, empresarial, …) were silently ignored | `Construction_2017_basics.do:107-125` | 🔧 use the ORIGINAL profile (no imputation, per §D) and **extend the exclusivity to all non-anonymous profile groups** (E5): a card is classified only if it is "ever" exactly ONE non-anonymous group; anonymous records never break exclusivity (known trunk glitch, tolerated as in the sample). So "adulto" = always adulto except anonymous records. Tag switcher cards (§D) |
+| E12 | `ever_*` per profile group + exclusivity | Sample-code: per-card max of dummies for {adulto, apoyo, mayor} only; if a card is "ever" more than one of the three, all set to missing (excluded). Mixtures with ANY other profile (anonymous, empresarial, …) were silently ignored | `Construction_2017_basics.do:107-125` | 🔧 use the IMPUTED profile (rule (2), per §D revised 2026-09-01) and **extend the exclusivity to all non-anonymous profile groups** (E5): a card is classified only if it is "ever" exactly ONE non-anonymous group; anonymous records never break exclusivity for the treatment groups. Additionally build `always_adulto` = adulto in EVERY transaction, no anonymous records at all (under the imputed profile) — required for the comparison group (E16). Tag switcher cards (§D) |
 | E13 | Presence flags | `in_6m_bef` (card appears in months −6 to −1), `in_6m_aft` (months 0 to 5) relative to Apr 2017 | `Construction_2017_basics.do:60-73` | ✅ port; parameterize the reform date and windows |
 | E14 | Spending by window | `tot_value_no_tr_*`: total paid on trips (no transfers) in windows −6/−1, 0/5, 6/11, 12/17 | `Construction_2017_basics.do:138-167` | ✅ port |
 | E15 | Subsidized months in pre/post windows | counts `*_m_in_6m_bef`, `*_m_in_18m_aft` of subsidized months (E11) and threshold indicators | `Construction_2017_subsidy_fares.do:204-238` | ✅ port; threshold decided: `$sub_n_trips_cond = 1` subsidized month, same as the sample analysis |
-| E16 | Treatment groups | `kept/lost/gain/never` per type based on pre/post subsidized months (E15) + `ever_*` (E12) | `Construction_2017_balanced_panel_with_treat.do` + README §6 | ✅ port (Spark or Stata? it's lightweight post-aggregation — decide based on where the panel ends up) |
+| E16 | Treatment groups | `kept/lost/gain/never` per type based on pre/post subsidized months (E15) + `ever_*` (E12); `never` (the comparison group) requires `always_adulto` (§D) | `Construction_2017_balanced_panel_with_treat.do` + README §6 | ✅ port (Spark or Stata? it's lightweight post-aggregation — decide based on where the panel ends up) |
 | E17 | Card-level dataset | One row per card: profile, ever_*, presence flags, cleaning-2 tags, total counts | new | ✅ for ALL cards (allows accounting of sample in/out) |
 
 ### Level 4 — Balanced card×month panel

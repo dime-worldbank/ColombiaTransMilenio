@@ -16,7 +16,7 @@
 # MAGIC 5. **Time and trip variables** — month/week/day/hour…, trip/transfer
 # MAGIC 6. **Profile group** — analytical grouping of card profiles
 # MAGIC 7. **Station fix** — use the access station for zonal operators
-# MAGIC 8. **Profile switches** — implausible/plausible switch tags and imputed profile
+# MAGIC 8. **Profile switches** — implausible/plausible switch tags and imputed profile (baseline for classification)
 # MAGIC 9. **Build T2** — consolidate all columns and write the table
 # MAGIC 10. **Status figures** — tag incidence, profiles by month, balance dates, days per card
 
@@ -361,7 +361,7 @@ station_fixed_expr = F.when(
 # MAGIC ---
 # MAGIC ## 8. Profile switches
 # MAGIC
-# MAGIC A card can plausibly go anonymous → personalized (bought anonymous, then registered), but never personalized → anonymous: those records are trunk devices mis-recording the profile. The baseline keeps the original profile; here we only tag the switching cards and build an imputed profile column for robustness checks.
+# MAGIC A card can plausibly go anonymous → personalized (bought anonymous, then registered), but never personalized → anonymous: those records are trunk devices mis-recording the profile. Here we tag the switching cards and build the imputed profile, which is the baseline profile for card classification; the original profile is kept for robustness checks.
 
 # COMMAND ----------
 
@@ -428,16 +428,23 @@ print(f"  └─ with an implausible switch        : {n_adulto_implausible:,} ({
 
 # COMMAND ----------
 
-# DBTITLE 1,Imputed profile (robustness column)
+# DBTITLE 1,Imputed profile (baseline for classification)
 # A transaction is imputed as anonymous if the card has ANY anonymous
 # transaction from that moment on: everything up to the card's last anonymous
-# transaction becomes anonymous. The baseline analysis ignores this column.
+# transaction becomes anonymous. Card classification uses this imputed
+# profile; the original profile is kept for robustness.
 _w_future = Window.partitionBy("cardnumber").orderBy("fecha_transaccion_timestamp") \
                   .rowsBetween(Window.currentRow, Window.unboundedFollowing)
 
 card_profile_imputed_expr = F.when(
     F.max(_is_anon.cast("int")).over(_w_future) == 1, F.lit("(001) Anonymous")
 ).otherwise(F.col("card_profile"))
+
+# Imputation only ever turns a profile into anonymous, so the imputed group
+# follows directly from the original group
+profile_group_imputed_expr = F.when(
+    F.col("card_profile_imputed") == "(001) Anonymous", F.lit("anonymous")
+).otherwise(F.col("profile_group"))
 
 # COMMAND ----------
 
@@ -459,8 +466,9 @@ df_t2 = (
     # Station fix
     .withColumn("is_trunk", is_trunk_expr.cast("int"))
     .withColumn("station_fixed", station_fixed_expr)
-    # Imputed profile (robustness)
+    # Imputed profile (baseline for classification)
     .withColumn("card_profile_imputed", card_profile_imputed_expr)
+    .withColumn("profile_group_imputed", profile_group_imputed_expr)
     # Row tags
     .withColumn("tag_high_balance", tag_high_balance_expr)
     .withColumn("tag_impossible_fare", tag_impossible_fare_expr)
