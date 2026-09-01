@@ -32,6 +32,59 @@ One transaction-level clean **silver table**.
 | 3. Aggregation | Card-level dataset (all cards) + card×month panel (balanced). | Other notebook in Databricks - other table  |
 | 4. Export & analysis | Download (or not) the restricted panel; merge Sisbén III at the person level (outside Databricks); analysis in Stata. | Outside Databricks |
 
+## Output tables
+
+| Table | Level | Content | Universe |
+|---|---|---|---|
+| T1. Silver 2016–2019 | transaction | types & formats (1a) + Cleaning 1 applied (1b: dedup, empty rows dropped, duplicate source files excluded) | all of 2016–2019 |
+| T2. Window silver | transaction | T1 filtered to the analysis window (C1, by filenames) + Cleaning-2 tag columns (C2–C7) + Level-1 constructed columns (E2–E6) | all transactions in the window |
+| T3. Monthly outcomes | card×month, observed months only | `n_trips`, `has_trips`, `avg_daily_trips` (E10); `apoyo_month`, `mayor_month` (E11) | card-months with ≥1 transaction |
+| T4. Card-level dataset | card | `card_profile`/`profile_group`, `ever_*` (E12), presence flags (E13), spending windows (E14), subsidized-month counts pre/post (E15), treatment group (E16), cleaning-2 tags (C2–C7 aggregated), `first_active_month` | ALL cards in the window (allows sample in/out accounting) |
+| T5. Balanced panel | card×month, balanced grid | T3 joined onto the cards×months grid, zero-coded (E19); month-level vars (`dist_months`, `before`/`after`, `period`) computed from ymonth. **No card-level columns duplicated here** — merge from T4 at analysis time | export restricted to the analysis sample (see Level 4 note) |
+
+## Codes
+
+Implementation context (Databricks):
+
+- Catalog/schema: `prd_mega.scolom15`. Bronze: `bronze_validaciones_from2016to2019`. Ingestion control table: `file_classification_from2016to2019`.
+- Proposed output table names (same schema): T1 `silver_validaciones_from2016to2019`, T2 `silver_validaciones_2017window`, T3 `monthly_outcomes_2017`, T4 `cards_2017`, T5 `panel_2017`.
+- Window parameters: reform month = 2017-04; analysis window = Oct 2016 – Sep 2017 (clearing dates); always parameterized, never hardcoded inline.
+- Excluded source files (see B notes): the 10 files `Validacion_<operator>_<name>_20170930.csv`, matched by pattern `Validacion_\d+_.*20170930` in N1 (which prints the matched list on each run). Operators: 001 CONSORCIO EXPRESS USAQUEN, 002 MASIVO CAPITAL SUBA ORIENTAL, 004 ESTE ES MI BUS CALLE 80, 005 GMOVIL ENGATIVA, 007 ETIB, 008 SUMA, 009 TRANZIT, 011 CONSORCIO EXPRESS SAN CRISTOBAL, 012 MASIVO CAPITAL KENNEDY, 014 ESTE ES MI BUS TINTAL ZONA FRANCA.
+
+Notebooks/scripts to complete or create, in order:
+
+| # | Code | Produces | Status / to do |
+|---|---|---|---|
+| N1 | `data-clean-silver-from2016to2019.py` (exists) | T1 | Written: 1a (dates, casting, categorical maps incl. `card_profile`), B2 missing-rows drop, file exclusion by pattern (2026-08-31), diagnostics. **To complete:** add the B1 dedup (card+timestamp) with its diagnostics; **write T1 to the catalog** (today `df_silver` is only built in memory); run end to end (the excluded-files printout should show exactly the 10 listed files) |
+| N2 | window + Cleaning-2 notebook (new) | T2 | To create: read T1, filter to the window by filenames (C1), compute tags C2–C7, add Level-1 constructed columns (E2–E6) incl. switch tags (§D), save T2 |
+| N3 | construction & aggregation notebook (new; may be split in two) | T3, T4, T5 | To create: fare table E1 (with the E4 pre-tabulation of users at subsidized fares per month); card-level vars E12–E16; monthly outcomes E10–E11; balanced panel E18–E19; save T3–T5 |
+| N4 | export cell/notebook (new) | CSVs | To create: export T5 restricted to the analysis sample + T4 in full, with stable numeric codes + value labels for Stata (see A4 note) |
+| S1 | Sisbén merge script (new, outside Databricks) | analysis dataset | To create: merge exported T4/T5 with the card→person crosswalk and Sisbén III scores; build `sisbenIII_range` (E20) |
+| S2 | Stata analysis (adapt existing) | results | Adapt `sample-code/analysis/*.do` to the new panel (variable names, sample filters now explicit) |
+
+### Status figures
+
+Each notebook ends with a "Status figures" section that generates these (so they regenerate on every run and always reflect the current data):
+
+**N1 — message: "the raw data is clean and we know what we have"**
+1. Daily transactions line plot, bronze vs T1 (before/after cleaning; the daily plot already in the notebook, duplicated for T1): shows the effect of the excluded files + dedup, and the data gaps in 2018–2019 that justify the Oct16–Sep17 window.
+2. Month×day coverage heatmap (already in the notebook): the map of which days have data, with the verified window marked.
+3. Cleaning waterfall: bar per stage — rows in bronze → after excluding duplicate source files → after dropping fully-empty rows → after dedup (= T1) — with row counts and % dropped at each step.
+4. Dropped duplicates per month (from the B1 diagnostics): flat = sporadic device double-writes; a spike in one month = a file loaded twice, investigate.
+
+**N2 — message: "this is what the analysis sample looks like"**
+1. Incidence of each tag: % of cards and % of transactions flagged by infrequent (C2), superswiper (C3), balance > 1M (C5), impossible fare (C6), early zero (C7). The key figure of this stage: how much each cleaning decision weighs.
+2. Transactions by `profile_group` per month (lines or stacked area) — this doubles as the pending informational check on `adultopv` and `frecuente`.
+3. `balance_before` > 1M rows by date — this is the pending informational check of C5.
+4. Distribution of distinct days per card in the window, with a line at 12: shows what the infrequent-user threshold cuts.
+
+**N3 — message: "the treatment groups exist and make sense"**
+1. The fare table, visual: modal fares by profile × fare period with their frequencies (E1) — validates the identification of subsidized trips.
+2. % of apoyo cards' trips at the subsidized fare, by month: the April 2017 reform and the August 2017 glitch must be visible here — best single sanity check of the whole pipeline.
+3. Sample funnel: all cards → in window → `in_6m_bef & in_6m_aft` → no cleaning tags → single profile → assigned to a group. Answers "how many are in/out of the sample".
+4. Number of cards per treatment group (kept/lost/gain/never, for apoyo and mayor).
+5. Mean `n_trips` per month by treatment group: raw pre-trends — the preview of the final analysis.
+
 ---
 
 ## A. Phase 1a — Silver: types and formats
@@ -209,60 +262,6 @@ Note: filtered to those in the analysis sample
 - Export balanced panel and card-level dataset
 - Sisbén III merge at the person level: outside Databricks
 - Final analysis in Stata adapting `sample-code/analysis/`.
-
-
-## Output tables
-
-| Table | Level | Content | Universe |
-|---|---|---|---|
-| T1. Silver 2016–2019 | transaction | types & formats (1a) + Cleaning 1 applied (1b: dedup, empty rows dropped, duplicate source files excluded) | all of 2016–2019 |
-| T2. Window silver | transaction | T1 filtered to the analysis window (C1, by filenames) + Cleaning-2 tag columns (C2–C7) + Level-1 constructed columns (E2–E6) | all transactions in the window |
-| T3. Monthly outcomes | card×month, observed months only | `n_trips`, `has_trips`, `avg_daily_trips` (E10); `apoyo_month`, `mayor_month` (E11) | card-months with ≥1 transaction |
-| T4. Card-level dataset | card | `card_profile`/`profile_group`, `ever_*` (E12), presence flags (E13), spending windows (E14), subsidized-month counts pre/post (E15), treatment group (E16), cleaning-2 tags (C2–C7 aggregated), `first_active_month` | ALL cards in the window (allows sample in/out accounting) |
-| T5. Balanced panel | card×month, balanced grid | T3 joined onto the cards×months grid, zero-coded (E19); month-level vars (`dist_months`, `before`/`after`, `period`) computed from ymonth. **No card-level columns duplicated here** — merge from T4 at analysis time | export restricted to the analysis sample (see Level 4 note) |
-
-## Codes
-
-Implementation context (Databricks):
-
-- Catalog/schema: `prd_mega.scolom15`. Bronze: `bronze_validaciones_from2016to2019`. Ingestion control table: `file_classification_from2016to2019`.
-- Proposed output table names (same schema): T1 `silver_validaciones_from2016to2019`, T2 `silver_validaciones_2017window`, T3 `monthly_outcomes_2017`, T4 `cards_2017`, T5 `panel_2017`.
-- Window parameters: reform month = 2017-04; analysis window = Oct 2016 – Sep 2017 (clearing dates); always parameterized, never hardcoded inline.
-- ⚠️ Input still missing from this doc: the exact names of the ~10 excluded Sep-30 files (they are in the output of the "Window files" diagnostic cell in N1) — paste them into `EXCLUDED_SOURCE_FILES` in N1 and record them here.
-
-Notebooks/scripts to complete or create, in order:
-
-| # | Code | Produces | Status / to do |
-|---|---|---|---|
-| N1 | `data-clean-silver-from2016to2019.py` (exists) | T1 | Written: 1a (dates, casting, categorical maps incl. `card_profile`), B2 missing-rows drop, diagnostics. **To complete:** paste the Sep-30 file names into `EXCLUDED_SOURCE_FILES`; add the B1 dedup (card+timestamp) with its diagnostics; **write T1 to the catalog** (today `df_silver` is only built in memory); run end to end |
-| N2 | window + Cleaning-2 notebook (new) | T2 | To create: read T1, filter to the window by filenames (C1), compute tags C2–C7, add Level-1 constructed columns (E2–E6) incl. profile imputation + switch tags (§D), save T2 |
-| N3 | construction & aggregation notebook (new; may be split in two) | T3, T4, T5 | To create: fare table E1 (with the E4 pre-tabulation of users at subsidized fares per month); card-level vars E12–E16; monthly outcomes E10–E11; balanced panel E18–E19; save T3–T5 |
-| N4 | export cell/notebook (new) | CSVs | To create: export T5 restricted to the analysis sample + T4 in full, with stable numeric codes + value labels for Stata (see A4 note) |
-| S1 | Sisbén merge script (new, outside Databricks) | analysis dataset | To create: merge exported T4/T5 with the card→person crosswalk and Sisbén III scores; build `sisbenIII_range` (E20) |
-| S2 | Stata analysis (adapt existing) | results | Adapt `sample-code/analysis/*.do` to the new panel (variable names, sample filters now explicit) |
-
-### Status figures
-
-Each notebook ends with a "Status figures" section that generates these (so they regenerate on every run and always reflect the current data):
-
-**N1 — message: "the raw data is clean and we know what we have"**
-1. Daily transactions line plot, bronze vs T1 (before/after cleaning; the daily plot already in the notebook, duplicated for T1): shows the effect of the excluded files + dedup, and the data gaps in 2018–2019 that justify the Oct16–Sep17 window.
-2. Month×day coverage heatmap (already in the notebook): the map of which days have data, with the verified window marked.
-3. Cleaning waterfall: bar per stage — rows in bronze → after excluding duplicate source files → after dropping fully-empty rows → after dedup (= T1) — with row counts and % dropped at each step.
-4. Dropped duplicates per month (from the B1 diagnostics): flat = sporadic device double-writes; a spike in one month = a file loaded twice, investigate.
-
-**N2 — message: "this is what the analysis sample looks like"**
-1. Incidence of each tag: % of cards and % of transactions flagged by infrequent (C2), superswiper (C3), balance > 1M (C5), impossible fare (C6), early zero (C7). The key figure of this stage: how much each cleaning decision weighs.
-2. Transactions by `profile_group` per month (lines or stacked area) — this doubles as the pending informational check on `adultopv` and `frecuente`.
-3. `balance_before` > 1M rows by date — this is the pending informational check of C5.
-4. Distribution of distinct days per card in the window, with a line at 12: shows what the infrequent-user threshold cuts.
-
-**N3 — message: "the treatment groups exist and make sense"**
-1. The fare table, visual: modal fares by profile × fare period with their frequencies (E1) — validates the identification of subsidized trips.
-2. % of apoyo cards' trips at the subsidized fare, by month: the April 2017 reform and the August 2017 glitch must be visible here — best single sanity check of the whole pipeline.
-3. Sample funnel: all cards → in window → `in_6m_bef & in_6m_aft` → no cleaning tags → single profile → assigned to a group. Answers "how many are in/out of the sample".
-4. Number of cards per treatment group (kept/lost/gain/never, for apoyo and mayor).
-5. Mean `n_trips` per month by treatment group: raw pre-trends — the preview of the final analysis.
 
 ## Pending informational checks (decisions already made; these just size them)
 
