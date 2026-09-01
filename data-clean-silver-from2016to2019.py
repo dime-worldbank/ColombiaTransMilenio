@@ -995,26 +995,39 @@ display(
 
 # COMMAND ----------
 
-# DBTITLE 1,Exclude duplicate re-delivery files (H10)
-# ── Files confirmed as duplicate re-deliveries ────────────────────────────────
-# The ~10 files dated Sep 30 2017 duplicate the monthly files' content:
-# ~100% of their rows match a monthly-file row on card + exact timestamp
-# (see CLEANING_DECISIONS_2017.md, H10). They are excluded from silver entirely.
-# TODO: paste the file names from the "Window files" diagnostic cell output.
-EXCLUDED_SOURCE_FILES = [
-    # "example_file_dated_2017-09-30.csv",
-]
+# DBTITLE 1,Exclude duplicate source files
+# ── Files confirmed as duplicates of the monthly files ────────────────────────
+# The files dated Sep 30 2017 duplicate the monthly files' content: ~100% of
+# their rows match a monthly-file row on card + exact timestamp (see
+# DECISIONS_2017.md, section B notes). They are excluded from silver entirely.
+# The 10 files (all confirmed):
+#   Validacion_001_CONSORCIO EXPRESS USAQUEN_20170930.csv
+#   Validacion_002_MASIVO CAPITAL SUBA ORIENTAL_20170930.csv
+#   Validacion_004_ESTE ES MI BUS CALLE 80_20170930.csv
+#   Validacion_005_GMOVIL ENGATIVA_20170930.csv
+#   Validacion_007_ETIB_20170930.csv
+#   Validacion_008_SUMA_20170930.csv
+#   Validacion_009_TRANZIT_20170930.csv
+#   Validacion_011_CONSORCIO EXPRESS SAN CRISTOBAL_20170930.csv
+#   Validacion_012_MASIVO CAPITAL KENNEDY_20170930.csv
+#   Validacion_014_ESTE ES MI BUS TINTAL ZONA FRANCA_20170930.csv
+# All follow the pattern Validacion_<operator>_..._20170930.csv, which no monthly
+# file can match (those are named NN_Validaciones<Month><Year>.csv). Excluding by
+# pattern is robust to space vs %20 encoding and catches same-batch files
+# missing from the list above.
+EXCLUDED_PATTERN = r"Validacion_\d+_.*20170930"
 
-if EXCLUDED_SOURCE_FILES:
-    _is_excluded = F.lit(False)
-    for fname in EXCLUDED_SOURCE_FILES:
-        _is_excluded = _is_excluded | F.col("_source_file").contains(fname)
-    n_excluded = df_with_parsed_dates.filter(_is_excluded).count()
-    print(f"Excluding {len(EXCLUDED_SOURCE_FILES)} files, {n_excluded:,} rows.")
-    df_for_silver = df_with_parsed_dates.filter(~_is_excluded)
-else:
-    print("⚠️  EXCLUDED_SOURCE_FILES is empty — no files excluded yet (paste the Sep-30 file names).")
-    df_for_silver = df_with_parsed_dates
+_is_excluded = F.col("_source_file").rlike(EXCLUDED_PATTERN)
+
+print("── Files excluded (verify against the 'Window files' diagnostic) ──")
+display(
+    df_with_parsed_dates.filter(_is_excluded)
+    .groupBy("_source_file").count().orderBy("_source_file")
+)
+n_excluded = df_with_parsed_dates.filter(_is_excluded).count()
+print(f"Rows excluded: {n_excluded:,}")
+
+df_for_silver = df_with_parsed_dates.filter(~_is_excluded)
 
 # ── Drop fully-empty rows (B5: 100% of content columns missing) ──────────────
 n_empty = df_for_silver.filter(pct_missing_expr >= 1.0).count()
