@@ -611,7 +611,7 @@ for numvar in numvars:
     bad = (
         df_with_parsed_dates
         .filter(F.col(numvar).isNotNull() & (F.trim(F.col(numvar)) != ""))
-        .filter(F.col(numvar).cast("double").isNull())
+        .filter(F.col(numvar).try_cast("double").isNull())
     )
     n_bad = bad.count()
     print(f"── {numvar}: non-parseable non-null values: {n_bad:,}")
@@ -622,7 +622,7 @@ for numvar in numvars:
 # capped at 50 in case garbage values inflate the list
 display(
     df_with_parsed_dates
-    .withColumn("value_double", F.col("value").cast("double"))
+    .withColumn("value_double", F.col("value").try_cast("double"))
     .groupBy("value", "value_double")
     .count()
     .orderBy(F.col("count").desc())
@@ -631,15 +631,46 @@ display(
 
 # COMMAND ----------
 
+# DBTITLE 1,Non-castable cardnumbers: which source files?
+# Per file: rows whose cardnumber is non-empty but not numeric, vs total rows.
+# ≈100% → the whole file uses hashed card ids → candidate to exclude from this
+# table (and route to a separate one). Low % → sporadic bad values only.
+_bad_card = (
+    F.col("cardnumber").isNotNull()
+    & (F.trim(F.col("cardnumber")) != "")
+    & F.col("cardnumber").try_cast("double").isNull()
+)
+
+card_files = (
+    df_with_parsed_dates
+    .groupBy("_source_file")
+    .agg(
+        F.count(F.lit(1)).alias("total_rows"),
+        F.sum(F.when(_bad_card, 1).otherwise(0)).alias("bad_cardnumber_rows"),
+        F.first(F.when(_bad_card, F.col("cardnumber")), ignorenulls=True).alias("example_value"),
+        F.min("clearing_date").alias("min_clearing_date"),
+        F.max("clearing_date").alias("max_clearing_date"),
+    )
+    .filter(F.col("bad_cardnumber_rows") > 0)
+    .withColumn("pct_bad", F.round(100 * F.col("bad_cardnumber_rows") / F.col("total_rows"), 2))
+    .orderBy(F.col("bad_cardnumber_rows").desc())
+)
+
+print(f"Files with non-castable cardnumbers: {card_files.count()}")
+display(card_files)
+
+# COMMAND ----------
+
 # DBTITLE 1,Numeric cast expressions
 # cardnumber → long, via decimal so values like "123.0" still parse (a double
 # would lose precision on long card ids). Amounts → double.
-# Values that fail the cast become NULL; they are counted after consolidation.
+# try_cast: malformed values (e.g. hex card ids) become NULL instead of
+# erroring under ANSI mode; they are counted after consolidation.
 _numeric_casts = {
-    "cardnumber":     F.col("cardnumber").cast("decimal(38,0)").cast("long"),
-    "balance_before": F.col("balance_before").cast("double"),
-    "value":          F.col("value").cast("double"),
-    "balance_after":  F.col("balance_after").cast("double"),
+    "cardnumber":     F.col("cardnumber").try_cast("decimal(38,0)").try_cast("long"),
+    "balance_before": F.col("balance_before").try_cast("double"),
+    "value":          F.col("value").try_cast("double"),
+    "balance_after":  F.col("balance_after").try_cast("double"),
 }
 
 # COMMAND ----------
