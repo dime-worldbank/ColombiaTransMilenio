@@ -7,7 +7,7 @@
 # MAGIC %md
 # MAGIC ## Index
 # MAGIC
-# MAGIC Builds the silver table `silver_validaciones_from2016to2019` from bronze: parses dates, casts numerics, maps categoricals, excludes duplicate source files, drops empty rows, dedups by card + timestamp.
+# MAGIC Builds the silver table `silver_validaciones_from2016to2019` from bronze: parses dates, casts numerics, maps categoricals, excludes duplicate source files, drops empty rows, dedups by card + timestamp. Cleaning and diagnostics run over all of 2016–2019; the saved table keeps only the analysis window (Oct 2016 – Sep 2017, filtered by the 12 monthly filenames as the last step).
 # MAGIC
 # MAGIC 1. **Setup** — packages, catalog, parameters
 # MAGIC 2. **Bronze table** — inspect columns
@@ -18,7 +18,7 @@
 # MAGIC 7. **Numeric variables** — checks and cast expressions
 # MAGIC 8. **Categorical variables** — canonical maps and coverage checks
 # MAGIC 9. **Missing values** — share of empty columns per row
-# MAGIC 10. **Build silver** — exclude duplicate files, drop empty rows, apply casts and maps, dedup
+# MAGIC 10. **Build silver** — exclude duplicate files, drop empty rows, apply casts and maps, dedup, filter to the analysis window
 # MAGIC 11. **Write T1** — save the silver table to the catalog
 # MAGIC 12. **Status figures** — daily bronze vs silver, coverage heatmap, cleaning waterfall, duplicates per month
 
@@ -867,11 +867,11 @@ display(
 # MAGIC ---
 # MAGIC ## 10. Build silver
 # MAGIC
-# MAGIC Four steps, in order: exclude duplicate source files → drop fully-empty rows → apply casts and maps → dedup by card + exact timestamp. The result is `df_t1`.
+# MAGIC In order: exclude duplicate source files → drop fully-empty rows → apply casts and maps → dedup by card + exact timestamp → filter to the analysis window (12 monthly files). The cleaning runs over all of 2016–2019; only the last step restricts to the window. The result is `df_t1_window`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 1: exclude duplicate source files
+# DBTITLE 1,Exclude duplicate source files
 _is_excluded = F.col("_source_file").rlike(EXCLUDED_PATTERN)
 
 print("── Files excluded (should be exactly the 10 listed in Parameters) ──")
@@ -886,14 +886,14 @@ df_for_silver = df_with_parsed_dates.filter(~_is_excluded)
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 2: drop fully-empty rows
+# DBTITLE 1,Drop fully-empty rows
 n_empty = df_for_silver.filter(pct_missing_expr >= 1.0).count()
 print(f"Fully-empty rows dropped (100% missing content columns): {n_empty:,}")
 df_for_silver = df_for_silver.filter(pct_missing_expr < 1.0)
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 3: apply casts and maps → df_silver
+# DBTITLE 1,Apply casts and maps → df_silver
 df_silver = (
     df_for_silver
     # Categorical maps
@@ -993,7 +993,7 @@ display(
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 4a: dedup pre-check — rows with a NULL dedup key
+# DBTITLE 1,Dedup pre-check: rows with a NULL dedup key
 # The dedup key is the pair (cardnumber, fecha_transaccion_timestamp). Rows
 # where either is NULL cannot be deduped (grouping NULLs would lump unrelated
 # rows together), so they bypass the dedup untouched. Expected: 0 everywhere.
@@ -1030,7 +1030,7 @@ else:
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 4b: dedup by card + exact timestamp
+# DBTITLE 1,Dedup by card + exact timestamp
 # Duplicate = same cardnumber + same exact timestamp: two validations by the
 # same card in the same second are physically one event at most. Keep the first
 # row of each group, drop the rest.
@@ -1066,7 +1066,7 @@ print(f"Kept rows with ≥1 duplicate (events affected) : {n_kept_affected:,}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 4c: dedup diagnostics
+# DBTITLE 1,Dedup diagnostics
 # Per month: a flat profile suggests sporadic device double-writes; a spike in
 # one month suggests a file loaded twice or two overlapping files.
 dup_month_pd = (
@@ -1103,13 +1103,30 @@ print(f"  DIFFERENT _source_file from kept row  : {_diag['dropped_total']-_diag[
 
 # COMMAND ----------
 
-# DBTITLE 1,Step 4d: apply dedup → df_t1
+# DBTITLE 1,Apply dedup → df_t1
 # Keep the first row of each group; re-attach the rows that bypassed the dedup.
 df_t1 = (
     df_dedup_flagged.filter(F.col("_rn") == 1)
     .drop("_rn", "_grp_n", "_kept_station", "_kept_file")
     .unionByName(df_silver.filter(~_has_key))
 )
+
+# COMMAND ----------
+
+# DBTITLE 1,Filter to the analysis window (12 monthly files)
+# The cleaning above runs over all of 2016-2019; the saved table keeps only the
+# analysis window, filtered by filename — the 12 monthly files cover Oct 2016 -
+# Sep 2017 completely (Section 6) — not by clearing_date.
+_is_monthly_file = F.lit(False)
+for fname in MONTHLY_FILES:
+    _is_monthly_file = _is_monthly_file | F.col("_source_file").contains(fname)
+
+n_outside_window = df_t1.filter(~_is_monthly_file).count()
+df_t1_window = df_t1.filter(_is_monthly_file)
+
+print(f"Rows outside the analysis window (dropped): {n_outside_window:,}")
+print("── Files kept (should be exactly the 12 monthly files) ──")
+display(df_t1_window.groupBy("_source_file").count().orderBy("_source_file"))
 
 # COMMAND ----------
 
@@ -1122,7 +1139,7 @@ df_t1 = (
 
 # DBTITLE 1,Save silver table to the catalog
 (
-    df_t1.write
+    df_t1_window.write
     .format("delta")
     .mode("overwrite")
     .option("overwriteSchema", "true")
@@ -1271,7 +1288,8 @@ _stages = [
     ("Bronze",                        n_bronze),
     ("− duplicate\nsource files",     n_bronze - n_excluded),
     ("− fully-empty\nrows",           n_bronze - n_excluded - n_empty),
-    ("− duplicates\n(= silver)",      n_bronze - n_excluded - n_empty - n_dropped_dedup),
+    ("− duplicates",                  n_bronze - n_excluded - n_empty - n_dropped_dedup),
+    ("→ analysis window\n(= silver)", n_bronze - n_excluded - n_empty - n_dropped_dedup - n_outside_window),
 ]
 
 # The last step must equal the written table's row count
@@ -1284,7 +1302,7 @@ else:
 fig, ax = plt.subplots(figsize=(10, 5.5))
 _labels = [s[0] for s in _stages]
 _vals   = [s[1] for s in _stages]
-_colors = ["dimgray", "steelblue", "steelblue", "seagreen"]
+_colors = ["dimgray", "steelblue", "steelblue", "steelblue", "seagreen"]
 bars = ax.bar(_labels, _vals, color=_colors)
 
 for i, (b, v) in enumerate(zip(bars, _vals)):
