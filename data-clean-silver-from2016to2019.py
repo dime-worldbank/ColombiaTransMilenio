@@ -60,7 +60,7 @@ import matplotlib.dates as mdates
 # Input and output tables
 BRONZE_TABLE  = "prd_mega.scolom15.bronze_validaciones_from2016to2019"
 CONTROL_TABLE = "prd_mega.scolom15.file_classification_from2016to2019"
-SILVER_TABLE  = "prd_mega.scolom15.silver_validaciones_from2016to2019"
+SILVER_TABLE  = "prd_mega.scolom15.silver_validaciones_OCT2016toSEP2017"
 
 # Analysis window (used here only for coverage checks and figure annotations)
 WINDOW_START = "2016-10-01"
@@ -99,6 +99,18 @@ EXCLUDED_PATTERN = r"Validacion_\d+_.*20170930"
 
 # Ingestion metadata columns (everything else is data content)
 META_COLS = ["_source_file", "_header_group", "_transform_format", "_ingestion_ts"]
+
+# COMMAND ----------
+
+# We only have dual for some month (April 2018, 2 days in 2019)
+# And in 2019 the files, card are not numbers but hashed
+display(
+    spark.table(BRONZE_TABLE)
+    .filter(F.col("_source_file").rlike("(?i)dual"))
+    .groupBy("_source_file")
+    .count()
+    .orderBy("_source_file")
+)
 
 # COMMAND ----------
 
@@ -887,9 +899,9 @@ df_for_silver = df_with_parsed_dates.filter(~_is_excluded)
 # COMMAND ----------
 
 # DBTITLE 1,Drop fully-empty rows
-n_empty = df_for_silver.filter(pct_missing_expr >= 1.0).count()
-print(f"Fully-empty rows dropped (100% missing content columns): {n_empty:,}")
-df_for_silver = df_for_silver.filter(pct_missing_expr < 1.0)
+n_empty = df_for_silver.filter(pct_missing_expr >= 0.7).count()
+print(f"Rows dropped due to many NA (70% missing content columns): {n_empty:,}")
+df_for_silver = df_for_silver.filter(pct_missing_expr < 0.7)
 
 # COMMAND ----------
 
@@ -994,8 +1006,8 @@ display(
 # COMMAND ----------
 
 # DBTITLE 1,Dedup pre-check: rows with a NULL dedup key
-# The dedup key is the pair (cardnumber, fecha_transaccion_timestamp). Rows
-# where either is NULL cannot be deduped (grouping NULLs would lump unrelated
+# The dedup key is the pair (cardnumber, fecha_transaccion_timestamp). 
+# Rows where either is NULL cannot be deduped (grouping NULLs would lump unrelated
 # rows together), so they bypass the dedup untouched. Expected: 0 everywhere.
 _null_card = F.col("cardnumber").isNull()
 _null_ts   = F.col("fecha_transaccion_timestamp").isNull()
@@ -1031,12 +1043,10 @@ else:
 # COMMAND ----------
 
 # DBTITLE 1,Dedup by card + exact timestamp
-# Duplicate = same cardnumber + same exact timestamp: two validations by the
-# same card in the same second are physically one event at most. Keep the first
-# row of each group, drop the rest.
-# Within a group the timestamps are identical, so "first" needs a tie-breaker:
-# ordering by (_source_file, station_id) makes the kept row deterministic and
-# is the reference the diagnostics compare against.
+# Duplicate = same cardnumber + same exact timestamp: 
+# two validations by the same card in the same second are considered one event at most.
+# Keep the first row of each group, drop the rest.
+# Ordering by (_source_file, station_id).
 _w_order = Window.partitionBy("cardnumber", "fecha_transaccion_timestamp").orderBy(
     F.col("_source_file").asc_nulls_last(), F.col("station_id").asc_nulls_last()
 )
@@ -1057,18 +1067,20 @@ df_dups = (
     .filter(F.col("_grp_n") > 1)
     .select("cardnumber", "fecha_transaccion", "_rn", "_grp_n",
             "station_id", "_kept_station", "_source_file", "_kept_file")
-    .persist()
 )
+n_total_dedup_input = df_silver.filter(_has_key).count()
 n_dropped_dedup = df_dups.filter(F.col("_rn") > 1).count()
 n_kept_affected = df_dups.filter(F.col("_rn") == 1).count()
-print(f"Dropped duplicate rows                        : {n_dropped_dedup:,}")
-print(f"Kept rows with ≥1 duplicate (events affected) : {n_kept_affected:,}")
+print(f"Total rows entering dedup                     : {n_total_dedup_input:,}")
+print(f"Dropped duplicate rows                        : {n_dropped_dedup:,} ({100 * n_dropped_dedup / n_total_dedup_input:.3f}%)")
+print(f"Kept rows with ≥1 duplicate (events affected) : {n_kept_affected:,} ({100 * n_kept_affected / n_total_dedup_input:.3f}%)")
 
 # COMMAND ----------
 
 # DBTITLE 1,Dedup diagnostics
-# Per month: a flat profile suggests sporadic device double-writes; a spike in
-# one month suggests a file loaded twice or two overlapping files.
+# Per month: 
+# a flat profile suggests sporadic device double-writes;
+# a spike in one month suggests a file loaded twice or two overlapping files.
 dup_month_pd = (
     df_dups
     .withColumn("ymonth", F.date_format("fecha_transaccion", "yyyy-MM"))
@@ -1103,6 +1115,62 @@ print(f"  DIFFERENT _source_file from kept row  : {_diag['dropped_total']-_diag[
 
 # COMMAND ----------
 
+# DBTITLE 1,Plot: dropped duplicates per month
+if dup_month_pd.empty:
+    print("No duplicates were dropped — nothing to plot.")
+else:
+    fig, ax = plt.subplots(figsize=(13, 4.5))
+    x = np.arange(len(dup_month_pd))
+    w = 0.42
+    ax.bar(x - w / 2, dup_month_pd["dropped_duplicates"], width=w, color="indianred", label="Dropped duplicates")
+    ax.bar(x + w / 2, dup_month_pd["kept_rows_affected"], width=w, color="steelblue", label="Kept rows with ≥1 duplicate")
+    ax.set_xticks(x)
+    ax.set_xticklabels(dup_month_pd["ymonth"], rotation=45, ha="right", fontsize=9)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.set_ylabel("Rows", fontsize=12)
+    ax.set_title("Dropped duplicates per month (by fecha_transaccion)",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Plot: dropped duplicates per month (zoomed ≤ 1 M)
+if dup_month_pd.empty:
+    print("No duplicates were dropped — nothing to plot.")
+else:
+    fig, ax = plt.subplots(figsize=(13, 4.5))
+    x = np.arange(len(dup_month_pd))
+    w = 0.42
+    ax.bar(x - w / 2, dup_month_pd["dropped_duplicates"], width=w, color="indianred", label="Dropped duplicates")
+    ax.bar(x + w / 2, dup_month_pd["kept_rows_affected"], width=w, color="steelblue", label="Kept rows with ≥1 duplicate")
+    ax.set_ylim(0,10_000)
+    ax.set_xticks(x)
+    ax.set_xticklabels(dup_month_pd["ymonth"], rotation=45, ha="right", fontsize=9)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.set_ylabel("Rows", fontsize=12)
+    ax.set_title("Dropped duplicates per month — zoomed to ≤ 10K",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Inspect sample duplicates for a given month
+# Change the month to inspect any period
+_inspect_month = "2017-08"
+
+display(
+    df_dups
+    .filter(F.date_format("fecha_transaccion", "yyyy-MM") == _inspect_month)
+    .orderBy("cardnumber", "_rn")
+    .limit(40)
+)
+
+# COMMAND ----------
+
 # DBTITLE 1,Apply dedup → df_t1
 # Keep the first row of each group; re-attach the rows that bypassed the dedup.
 df_t1 = (
@@ -1124,7 +1192,8 @@ for fname in MONTHLY_FILES:
 n_outside_window = df_t1.filter(~_is_monthly_file).count()
 df_t1_window = df_t1.filter(_is_monthly_file)
 
-print(f"Rows outside the analysis window (dropped): {n_outside_window:,}")
+n_t1_total = df_t1.count()
+print(f"Rows outside the analysis window (dropped): {n_outside_window:,} ({100 * n_outside_window / n_t1_total:.3f}%)")
 print("── Files kept (should be exactly the 12 monthly files) ──")
 display(df_t1_window.groupBy("_source_file").count().orderBy("_source_file"))
 
@@ -1164,7 +1233,8 @@ print(f"✅ Wrote {SILVER_TABLE}: {n_t1:,} rows")
 # COMMAND ----------
 
 # DBTITLE 1,Figure 1: daily transactions, bronze vs silver
-df_t1_tbl = spark.table(SILVER_TABLE)
+# Use df_t1 (full cleaned data, pre-window) so the comparison
+# with bronze covers the entire 2016–2019 range.
 
 def _daily_counts(df, date_col):
     pdf = (
@@ -1177,8 +1247,8 @@ def _daily_counts(df, date_col):
     return pdf.sort_values("date")
 
 _daily_pairs = [
-    ("clearing_date",     _daily_counts(df_with_parsed_dates, "clearing_date"),     _daily_counts(df_t1_tbl, "clearing_date")),
-    ("fecha_transaccion", _daily_counts(df_with_parsed_dates, "fecha_transaccion"), _daily_counts(df_t1_tbl, "fecha_transaccion")),
+    ("clearing_date",     _daily_counts(df_with_parsed_dates, "clearing_date"),     _daily_counts(df_t1, "clearing_date")),
+    ("fecha_transaccion", _daily_counts(df_with_parsed_dates, "fecha_transaccion"), _daily_counts(df_t1, "fecha_transaccion")),
 ]
 
 fig, axes = plt.subplots(2, 1, figsize=(13, 9), sharex=True)
@@ -1343,4 +1413,4 @@ else:
     plt.tight_layout()
     plt.show()
 
-df_dups.unpersist()
+
