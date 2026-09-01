@@ -21,6 +21,9 @@
 # MAGIC 6. **Numeric Variables** — Validation and casting of `cardnumber`, `balance_before`, `value`, `balance_after`
 # MAGIC 7. **Categorical Variables** — Frequency counts for `card_type`
 # MAGIC 8. **Consolidation** — Chain all transformations into `df_silver`
+# MAGIC 9. **Cleaning 1 — B1 dedup** — card + exact timestamp, keep the first row; B1 diagnostics
+# MAGIC 10. **Write T1** — Save `silver_validaciones_from2016to2019` to the catalog
+# MAGIC 11. **Status figures** — daily bronze vs T1, T1 coverage heatmap, cleaning waterfall, dropped duplicates per month
 
 # COMMAND ----------
 
@@ -1146,3 +1149,366 @@ display(
     .count()
     .orderBy(F.col("count").desc())
 )
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 9: Cleaning 1 — B1 dedup
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 9. Cleaning 1 — B1 dedup (card + exact timestamp)
+
+# COMMAND ----------
+
+# DBTITLE 1,B1 dedup: flag duplicates within (card, exact timestamp)
+# ══════════════════════════════════════════════════════════════════════════════
+# B1 DEDUP (DECISIONS_2017.md §B1): duplicate = same cardnumber + same EXACT
+# fecha_transaccion_timestamp; keep the first row, drop the rest. Two
+# validations by the same card in the same second are physically one event at
+# most, whatever the station field says; requiring station/line to match would
+# make the dedup fragile to formatting differences across source files.
+# Runs on df_silver (post-consolidation) so the key uses the CAST cardnumber
+# (normalizes e.g. "123" vs "123.0") and the parsed timestamp.
+# ══════════════════════════════════════════════════════════════════════════════
+from pyspark.sql import Window
+
+# ── Pre-check: rows with a NULL dedup-key component ──────────────────────────
+# The dedup key is the PAIR (cardnumber, fecha_transaccion_timestamp). A row
+# with either component NULL (failed cardnumber cast, or timestamp that did not
+# parse) cannot be deduped: partitionBy would lump all NULLs together and drop
+# unrelated rows. Those rows bypass the dedup untouched.
+# EXPECTED: 0 in every bucket — the A2/A3 checks already verified clean parsing
+# for Oct 2016 – Sep 2017. If any show up, inspect their source files before
+# trusting T1 (they are most likely in the broken later-dates files).
+_null_card = F.col("cardnumber").isNull()
+_null_ts   = F.col("fecha_transaccion_timestamp").isNull()
+_has_key   = ~_null_card & ~_null_ts
+
+_key_check = df_silver.agg(
+    F.sum(F.when(_null_card & ~_null_ts, 1).otherwise(0)).alias("null_card_only"),
+    F.sum(F.when(~_null_card & _null_ts, 1).otherwise(0)).alias("null_ts_only"),
+    F.sum(F.when(_null_card & _null_ts, 1).otherwise(0)).alias("null_both"),
+).collect()[0]
+n_no_key = _key_check["null_card_only"] + _key_check["null_ts_only"] + _key_check["null_both"]
+
+print("── Dedup-key NULL check (expected: 0 everywhere) ──")
+print(f"NULL cardnumber only              : {_key_check['null_card_only']:,}")
+print(f"NULL timestamp only               : {_key_check['null_ts_only']:,}")
+print(f"NULL both                         : {_key_check['null_both']:,}")
+print(f"Total bypassing dedup (kept as-is): {n_no_key:,}")
+if n_no_key == 0:
+    print("✅ Every row has a complete dedup key.")
+else:
+    print("⚠️  Rows with an incomplete key bypass the dedup — source files below:")
+    display(
+        df_silver.filter(~_has_key)
+        .groupBy("_source_file")
+        .agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.sum(F.when(_null_card, 1).otherwise(0)).alias("null_cardnumber"),
+            F.sum(F.when(_null_ts, 1).otherwise(0)).alias("null_timestamp"),
+        )
+        .orderBy(F.col("rows").desc())
+    )
+
+# Timestamps are identical within a group, so "first" is arbitrary; ordering by
+# (_source_file, station_id) makes the kept row deterministic across reruns and
+# defines the reference row the B1 diagnostics compare against.
+_w_order = Window.partitionBy("cardnumber", "fecha_transaccion_timestamp").orderBy(
+    F.col("_source_file").asc_nulls_last(), F.col("station_id").asc_nulls_last()
+)
+_w_group = Window.partitionBy("cardnumber", "fecha_transaccion_timestamp")
+
+df_dedup_flagged = (
+    df_silver.filter(_has_key)
+    .withColumn("_rn", F.row_number().over(_w_order))
+    .withColumn("_grp_n", F.count(F.lit(1)).over(_w_group))
+    # First row of the ordered group = the row kept; broadcast its station and
+    # source file to every row of the group for the pairwise diagnostics.
+    .withColumn("_kept_station", F.first("station_id").over(_w_order))
+    .withColumn("_kept_file", F.first("_source_file").over(_w_order))
+)
+
+# Materialize only the affected groups (tiny vs the full table) so the
+# diagnostics below don't recompute the window per query.
+df_dups = (
+    df_dedup_flagged
+    .filter(F.col("_grp_n") > 1)
+    .select("cardnumber", "fecha_transaccion", "_rn", "_grp_n",
+            "station_id", "_kept_station", "_source_file", "_kept_file")
+    .persist()
+)
+n_dropped_dedup = df_dups.filter(F.col("_rn") > 1).count()
+n_kept_affected = df_dups.filter(F.col("_rn") == 1).count()
+print(f"Dropped duplicate rows                        : {n_dropped_dedup:,}")
+print(f"Kept rows with ≥1 duplicate (events affected) : {n_kept_affected:,}")
+
+# COMMAND ----------
+
+# DBTITLE 1,B1 diagnostics: per month, station match, source file
+# ── 1. Dropped duplicates and affected kept rows per month ────────────────────
+# Flat profile = sporadic device double-writes; a spike in one month suggests a
+# file loaded twice or two overlapping files (investigate before trusting T1).
+dup_month_pd = (
+    df_dups
+    .withColumn("ymonth", F.date_format("fecha_transaccion", "yyyy-MM"))
+    .groupBy("ymonth")
+    .agg(
+        F.sum(F.when(F.col("_rn") > 1, 1).otherwise(0)).alias("dropped_duplicates"),
+        F.sum(F.when(F.col("_rn") == 1, 1).otherwise(0)).alias("kept_rows_affected"),
+    )
+    .orderBy("ymonth")
+    .toPandas()
+)
+display(dup_month_pd)
+
+# ── 2/3. Dropped rows compared against the kept row of their group ────────────
+# station: differing station = the case the old station-based rule would miss.
+# source file: same file = device double-write; different file = the same trip
+# recorded in two source files (worth investigating if the count is large).
+_diag = (
+    df_dups
+    .filter(F.col("_rn") > 1)
+    .agg(
+        F.count(F.lit(1)).alias("dropped_total"),
+        F.sum(F.when(F.col("station_id").eqNullSafe(F.col("_kept_station")), 1).otherwise(0)).alias("station_match"),
+        F.sum(F.when(F.col("_source_file") == F.col("_kept_file"), 1).otherwise(0)).alias("same_file"),
+    )
+    .collect()[0]
+)
+_tot = _diag["dropped_total"] or 1
+print(f"Dropped duplicates                      : {_diag['dropped_total']:,}")
+print(f"  station MATCHES the kept row          : {_diag['station_match']:,} ({100*_diag['station_match']/_tot:.1f}%)")
+print(f"  station DIFFERS from the kept row     : {_diag['dropped_total']-_diag['station_match']:,} ({100*(_diag['dropped_total']-_diag['station_match'])/_tot:.1f}%)  ← missed by the old station-based rule")
+print(f"  SAME _source_file as the kept row     : {_diag['same_file']:,} ({100*_diag['same_file']/_tot:.1f}%)  ← device double-writes")
+print(f"  DIFFERENT _source_file from kept row  : {_diag['dropped_total']-_diag['same_file']:,} ({100*(_diag['dropped_total']-_diag['same_file'])/_tot:.1f}%)  ← same trip in two files")
+
+# COMMAND ----------
+
+# DBTITLE 1,Apply B1 dedup → df_t1
+# Keep the first row of each (card, timestamp) group; re-attach the rows that
+# bypassed the dedup for NULL key components. df_t1 = T1, ready to write.
+df_t1 = (
+    df_dedup_flagged.filter(F.col("_rn") == 1)
+    .drop("_rn", "_grp_n", "_kept_station", "_kept_file")
+    .unionByName(df_silver.filter(~_has_key))
+)
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 10: Write T1
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 10. Write T1 — `silver_validaciones_from2016to2019`
+
+# COMMAND ----------
+
+# DBTITLE 1,Write T1 to the catalog
+SILVER_TABLE = "prd_mega.scolom15.silver_validaciones_from2016to2019"
+
+(
+    df_t1.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(SILVER_TABLE)
+)
+
+n_t1 = spark.table(SILVER_TABLE).count()
+print(f"✅ Wrote {SILVER_TABLE}: {n_t1:,} rows")
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 11: Status figures
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 11. Status figures — "the raw data is clean and we know what we have"
+# MAGIC
+# MAGIC 1. Daily transactions, bronze vs T1 (effect of excluded files + dedup; 2018–2019 gaps that justify the Oct16–Sep17 window)
+# MAGIC 2. Month×day coverage heatmap of T1, with the verified analysis window marked
+# MAGIC 3. Cleaning waterfall: bronze → excluded source files → empty rows → dedup (= T1)
+# MAGIC 4. Dropped duplicates per month (B1 diagnostics)
+
+# COMMAND ----------
+
+# DBTITLE 1,Status figure 1: daily transactions, bronze vs T1
+df_t1_tbl = spark.table(SILVER_TABLE)
+
+def _daily_counts(df, date_col):
+    pdf = (
+        df.filter(F.col(date_col).isNotNull())
+        .groupBy(date_col).count()
+        .withColumnRenamed(date_col, "date")
+        .toPandas()
+    )
+    pdf["date"] = pd.to_datetime(pdf["date"])
+    return pdf.sort_values("date")
+
+_daily_pairs = [
+    ("clearing_date",     _daily_counts(df_with_parsed_dates, "clearing_date"),     _daily_counts(df_t1_tbl, "clearing_date")),
+    ("fecha_transaccion", _daily_counts(df_with_parsed_dates, "fecha_transaccion"), _daily_counts(df_t1_tbl, "fecha_transaccion")),
+]
+
+fig, axes = plt.subplots(2, 1, figsize=(13, 9), sharex=True)
+for ax, (var, d_bronze, d_t1) in zip(axes, _daily_pairs):
+    ax.plot(d_bronze["date"], d_bronze["count"], color="lightcoral", linewidth=0.8, label="Bronze (raw)")
+    ax.plot(d_t1["date"], d_t1["count"], color="steelblue", linewidth=0.8, label="T1 (silver)")
+    ax.axvspan(pd.Timestamp(WINDOW_START), pd.Timestamp(WINDOW_END), color="green", alpha=0.07, label="Analysis window")
+    ax.axvline(pd.Timestamp("2017-04-01"), color="red", linewidth=1.2, linestyle="--", label="Reform (1 Apr 2017)")
+    ax.set_xlim(d_bronze["date"].min(), d_bronze["date"].max())
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+    ax.set_ylabel("Transactions", fontsize=12)
+    ax.set_title(f"Daily transactions by {var} — bronze vs T1", fontsize=13, fontweight="bold")
+    ax.legend(loc="upper right", fontsize=9)
+
+plt.xticks(rotation=45, ha="right")
+plt.xlabel("Day", fontsize=12)
+plt.suptitle("Status figure 1 — Effect of cleaning (excluded files + dedup) and data gaps in 2018–2019", fontsize=13, y=1.005)
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Status figure 2: T1 month×day coverage heatmap, window marked
+daily_t1_heat = (
+    df_t1_tbl
+    .filter(F.col("clearing_date").isNotNull())
+    .groupBy("clearing_date")
+    .count()
+    .withColumn("year",  F.year("clearing_date"))
+    .withColumn("month", F.month("clearing_date"))
+    .withColumn("day",   F.dayofmonth("clearing_date"))
+    .toPandas()
+)
+
+_win_start = pd.Timestamp(WINDOW_START)
+_win_end   = pd.Timestamp(WINDOW_END)
+
+years_t1 = sorted(daily_t1_heat["year"].unique())
+fig, axes = plt.subplots(len(years_t1), 1, figsize=(22, 4 * len(years_t1)))
+if len(years_t1) == 1:
+    axes = [axes]
+
+for ax, year in zip(axes, years_t1):
+    yd = daily_t1_heat[daily_t1_heat["year"] == year]
+
+    grid = np.full((12, 31), np.nan)
+    for m in range(1, 13):
+        n_days = calendar.monthrange(year, m)[1]
+        grid[m - 1, :n_days] = 0
+    for _, row in yd.iterrows():
+        grid[int(row["month"]) - 1, int(row["day"]) - 1] = row["count"]
+
+    max_count = yd["count"].max() if not yd.empty else 1
+
+    gray_data = np.ma.masked_where((np.isnan(grid)) | (grid == 0), grid)
+    ax.imshow(gray_data, aspect="auto", cmap=plt.cm.Greys,
+              vmin=0, vmax=max_count, interpolation="nearest")
+
+    red_rgba = np.zeros((12, 31, 4))
+    red_rgba[(~np.isnan(grid)) & (grid == 0)] = [1, 0, 0, 1]
+    ax.imshow(red_rgba, aspect="auto", interpolation="nearest")
+
+    sm = plt.cm.ScalarMappable(cmap="Greys", norm=mcolors.Normalize(vmin=0, vmax=max_count))
+    cbar = plt.colorbar(sm, ax=ax, label="Transactions", fraction=0.015, pad=0.01)
+    cbar.ax.yaxis.set_label_position("left")
+
+    # Mark the verified analysis window: blue frame around its months in this year
+    _win_months = [m for m in range(1, 13)
+                   if _win_start <= pd.Timestamp(year=year, month=m, day=1) <= _win_end]
+    if _win_months:
+        m0, m1 = min(_win_months), max(_win_months)
+        ax.add_patch(mpatches.Rectangle(
+            (-0.5, m0 - 1.5), 31, (m1 - m0 + 1),
+            fill=False, edgecolor="dodgerblue", linewidth=2.5, zorder=5,
+        ))
+
+    ax.set_yticks(range(12))
+    ax.set_yticklabels(MONTH_LABELS, fontsize=9)
+    ax.set_xticks(range(31))
+    ax.set_xticklabels(range(1, 32), fontsize=8)
+    ax.set_xlabel("Day of month", fontsize=10)
+    ax.set_title(str(year), fontsize=13, fontweight="bold", pad=8)
+
+    ax.set_xticks(np.arange(-0.5, 31, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, 12, 1), minor=True)
+    ax.grid(which="minor", color="lightgray", linewidth=0.4)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    red_p   = mpatches.Patch(color="red", label="No data (valid day)")
+    white_p = mpatches.Patch(facecolor="white", edgecolor="lightgray", label="Invalid date")
+    win_p   = mpatches.Patch(facecolor="none", edgecolor="dodgerblue", linewidth=2, label="Verified analysis window")
+    ax.legend(handles=[red_p, white_p, win_p], loc="lower right", fontsize=8, framealpha=0.85)
+
+plt.suptitle("Status figure 2 — T1 coverage heatmap (month × day, clearing_date), verified window marked",
+             fontsize=14, fontweight="bold", y=1.01)
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Status figure 3: cleaning waterfall (bronze → T1)
+# Stage counts. n_excluded, n_empty, n_dropped_dedup and n_t1 come from the
+# cells above (Sections 8–10), so this figure always reflects the current run.
+n_bronze = spark.table(BRONZE_TABLE).count()
+
+_stages = [
+    ("Bronze",                        n_bronze),
+    ("− duplicate\nsource files",     n_bronze - n_excluded),
+    ("− fully-empty\nrows",           n_bronze - n_excluded - n_empty),
+    ("− B1 duplicates\n(= T1)",       n_bronze - n_excluded - n_empty - n_dropped_dedup),
+]
+
+# Consistency check: the last stage must equal the written table's row count
+_expected_t1 = _stages[-1][1]
+if _expected_t1 == n_t1:
+    print(f"✅ Waterfall consistent: bronze − exclusions = T1 rows ({n_t1:,})")
+else:
+    print(f"⚠️  Waterfall mismatch: expected {_expected_t1:,} but T1 has {n_t1:,} (diff {n_t1 - _expected_t1:+,}) — investigate")
+
+fig, ax = plt.subplots(figsize=(10, 5.5))
+_labels = [s[0] for s in _stages]
+_vals   = [s[1] for s in _stages]
+_colors = ["dimgray", "steelblue", "steelblue", "seagreen"]
+bars = ax.bar(_labels, _vals, color=_colors)
+
+for i, (b, v) in enumerate(zip(bars, _vals)):
+    txt = f"{v:,}"
+    if i > 0:
+        drop = _vals[i - 1] - v
+        txt += f"\n−{drop:,} ({100 * drop / _vals[i - 1]:.3f}%)"
+    ax.text(b.get_x() + b.get_width() / 2, v, txt, ha="center", va="bottom", fontsize=10)
+
+ax.set_ylim(0, max(_vals) * 1.12)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x):,}"))
+ax.set_ylabel("Rows", fontsize=12)
+ax.set_title("Status figure 3 — Cleaning waterfall: rows at each stage (count and % dropped vs previous)",
+             fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Status figure 4: dropped duplicates per month (B1)
+# Flat = sporadic device double-writes; a spike in one month = a file loaded
+# twice or two overlapping files — investigate.
+if dup_month_pd.empty:
+    print("No duplicates were dropped — nothing to plot.")
+else:
+    fig, ax = plt.subplots(figsize=(13, 4.5))
+    x = np.arange(len(dup_month_pd))
+    w = 0.42
+    ax.bar(x - w / 2, dup_month_pd["dropped_duplicates"], width=w, color="indianred", label="Dropped duplicates")
+    ax.bar(x + w / 2, dup_month_pd["kept_rows_affected"], width=w, color="steelblue", label="Kept rows with ≥1 duplicate (events affected)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(dup_month_pd["ymonth"], rotation=45, ha="right", fontsize=9)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.set_ylabel("Rows", fontsize=12)
+    ax.set_title("Status figure 4 — B1 dropped duplicates per month (by fecha_transaccion)",
+                 fontsize=13, fontweight="bold")
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    plt.show()
+
+df_dups.unpersist()
