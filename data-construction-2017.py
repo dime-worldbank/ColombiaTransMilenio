@@ -36,6 +36,7 @@ import pandas as pd
 import numpy as np
 
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # COMMAND ----------
 
@@ -263,20 +264,34 @@ df_tx = df_t2.join(
     "cardnumber", "left",
 )
 
+_pretab_pd = {}
 for group, ever_col in [("apoyo", "ever_apoyo"), ("mayor", "ever_mayor")]:
-    print(f"\n── {group}: cards and trips at the {group} subsidized fare, by month ──")
-    display(
+    _pretab_pd[group] = (
         df_tx
         .filter((F.col(ever_col) == 1) & (F.col("trip") == 1))
         .groupBy("ymonth")
         .agg(
             F.countDistinct("cardnumber").alias("cards_total"),
             F.countDistinct(F.when(_fare_match_expr(group), F.col("cardnumber"))).alias("cards_at_sub_fare"),
-            F.count(F.lit(1)).alias("trips_total"),
-            F.sum(_fare_match_expr(group).cast("int")).alias("trips_at_sub_fare"),
         )
         .orderBy("ymonth")
+        .toPandas()
     )
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+for ax, group in zip(axes, ["apoyo", "mayor"]):
+    pdf = _pretab_pd[group]
+    ax.plot(pdf["ymonth"], pdf["cards_total"], marker="o", color="dimgray", linewidth=1.3, label="Cards traveling")
+    ax.plot(pdf["ymonth"], pdf["cards_at_sub_fare"], marker="o", color="indianred", linewidth=1.3, label="Cards at the subsidized fare")
+    ax.axvline(REFORM_MONTH, color="red", linewidth=1.2, linestyle="--", label=f"Reform ({REFORM_MONTH})")
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.tick_params(axis="x", rotation=45)
+    ax.set_ylabel("Cards per month", fontsize=11)
+    ax.set_title(group, fontsize=12, fontweight="bold")
+    ax.legend(fontsize=9)
+plt.suptitle("Cards at the subsidized fare, by month", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 
@@ -316,22 +331,22 @@ plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
 plt.show()
 
-# Daily table for the months around the glitch, to pin down its exact dates
-print("── Days around the glitch month ──")
-display(
-    df_tx
-    .filter(
-        (F.col("ever_apoyo") == 1) & (F.col("trip") == 1)
-        & F.col("ymonth").isin("2017-07", "2017-08", "2017-09")
-    )
-    .groupBy("fecha_transaccion")
-    .agg(
-        F.countDistinct("cardnumber").alias("cards_total"),
-        F.countDistinct(F.when(_fare_match_expr("apoyo"), F.col("cardnumber"))).alias("cards_at_sub_fare"),
-        F.round(100 * F.countDistinct(F.when(_fare_match_expr("apoyo"), F.col("cardnumber"))) / F.countDistinct("cardnumber"), 1).alias("pct"),
-    )
-    .orderBy("fecha_transaccion")
-)
+# Zoom on the months around the glitch, to pin down its exact start and end days
+_zoom = glitch_daily_pd[
+    (glitch_daily_pd["fecha_transaccion"] >= "2017-07-01")
+    & (glitch_daily_pd["fecha_transaccion"] <= "2017-09-30")
+]
+fig, ax = plt.subplots(figsize=(13, 4))
+ax.plot(_zoom["fecha_transaccion"], _zoom["pct_at_sub_fare"], marker="o", markersize=3, color="steelblue", linewidth=1.0)
+ax.axvspan(pd.Timestamp(f"{GLITCH_MONTH}-01"), pd.Timestamp(f"{GLITCH_MONTH}-01") + pd.offsets.MonthEnd(1), color="orange", alpha=0.15)
+ax.xaxis.set_major_locator(mdates.DayLocator(interval=3))
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%b-%d"))
+ax.tick_params(axis="x", rotation=45)
+ax.set_ylim(0, 100)
+ax.set_ylabel("% of traveling apoyo cards\nat the subsidized fare", fontsize=11)
+ax.set_title("Zoom Jul–Sep 2017: exact start and end of the glitch", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 

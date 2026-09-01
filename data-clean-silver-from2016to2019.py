@@ -618,13 +618,15 @@ for numvar in numvars:
     if n_bad > 0:
         display(bad.groupBy(numvar).count().orderBy(F.col("count").desc()).limit(20))
 
-# Full distribution of value (low cardinality: a handful of fares)
+# Distribution of value: a handful of legitimate fares should dominate;
+# capped at 50 in case garbage values inflate the list
 display(
     df_with_parsed_dates
     .withColumn("value_double", F.col("value").cast("double"))
     .groupBy("value", "value_double")
     .count()
     .orderBy(F.col("count").desc())
+    .limit(50)
 )
 
 # COMMAND ----------
@@ -1047,7 +1049,6 @@ dup_month_pd = (
     .orderBy("ymonth")
     .toPandas()
 )
-display(dup_month_pd)
 
 # Each dropped row vs the kept row of its group:
 #   same station or not (duplicates can differ in station formatting)

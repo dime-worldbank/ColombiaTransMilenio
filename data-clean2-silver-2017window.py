@@ -586,8 +586,7 @@ plt.tight_layout()
 plt.show()
 
 # Size of adultopv and frecuente in the window (transactions and cards by month)
-print("── adultopv and frecuente by month ──")
-display(
+_check_pd = (
     df_t2_tbl
     .filter(F.col("profile_group").isin("adultopv", "frecuente"))
     .groupBy("ymonth", "profile_group")
@@ -595,8 +594,22 @@ display(
         F.count(F.lit(1)).alias("transactions"),
         F.countDistinct("cardnumber").alias("distinct_cards"),
     )
-    .orderBy("ymonth", "profile_group")
+    .orderBy("ymonth")
+    .toPandas()
 )
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+for ax, var, title in [(axes[0], "transactions", "Transactions"), (axes[1], "distinct_cards", "Distinct cards")]:
+    for group, color in [("adultopv", "steelblue"), ("frecuente", "indianred")]:
+        pdf = _check_pd[_check_pd["profile_group"] == group]
+        ax.plot(pdf["ymonth"], pdf[var], marker="o", linewidth=1.3, color=color, label=group)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+    ax.tick_params(axis="x", rotation=45)
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.legend(fontsize=9)
+plt.suptitle("Size of adultopv and frecuente in the window, by month", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
 
 # COMMAND ----------
 
