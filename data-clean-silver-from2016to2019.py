@@ -902,6 +902,42 @@ for raw_col, (clean_name, expr) in cat_maps.items():
 
 # COMMAND ----------
 
+# DBTITLE 1,Missing values per row (B5)
+# ── % of missing content columns per row ─────────────────────────────────────
+# Old-code handled this ad hoc at ingestion (probed rows with null `value` per
+# schema, dropped empty Excel rows / any-null rows of one corrupted file).
+# Systematic version: share of missing content columns per row.
+#   - rows 100% missing → dropped in the consolidation below
+#   - rows with many (but not all) missing → inspect here, decide case by case
+_content_cols = [c for c in spark.table(BRONZE_TABLE).columns
+                 if c not in ("_source_file", "_header_group", "_transform_format", "_ingestion_ts")]
+
+_missing_count = sum(
+    F.when(F.col(c).isNull() | (F.trim(F.col(c)) == ""), 1).otherwise(0)
+    for c in _content_cols
+)
+pct_missing_expr = (_missing_count / F.lit(len(_content_cols)))
+
+# Distribution of per-row missing share
+display(
+    df_with_parsed_dates
+    .withColumn("_pct_missing", F.round(pct_missing_expr, 2))
+    .groupBy("_pct_missing")
+    .count()
+    .orderBy("_pct_missing")
+)
+
+# Sample of high-missing (but not fully empty) rows, with their source file
+display(
+    df_with_parsed_dates
+    .withColumn("_pct_missing", pct_missing_expr)
+    .filter((F.col("_pct_missing") >= 0.5) & (F.col("_pct_missing") < 1.0))
+    .select("_source_file", "_pct_missing", *_content_cols)
+    .limit(50)
+)
+
+# COMMAND ----------
+
 # DBTITLE 1,Exclude duplicate re-delivery files (H10)
 # ── Files confirmed as duplicate re-deliveries ────────────────────────────────
 # The ~10 files dated Sep 30 2017 duplicate the monthly files' content:
@@ -922,6 +958,11 @@ if EXCLUDED_SOURCE_FILES:
 else:
     print("⚠️  EXCLUDED_SOURCE_FILES is empty — no files excluded yet (paste the Sep-30 file names).")
     df_for_silver = df_with_parsed_dates
+
+# ── Drop fully-empty rows (B5: 100% of content columns missing) ──────────────
+n_empty = df_for_silver.filter(pct_missing_expr >= 1.0).count()
+print(f"Fully-empty rows dropped (100% missing content columns): {n_empty:,}")
+df_for_silver = df_for_silver.filter(pct_missing_expr < 1.0)
 
 # COMMAND ----------
 
