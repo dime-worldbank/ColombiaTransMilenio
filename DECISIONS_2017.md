@@ -11,7 +11,7 @@ Icon convention in the verdict columns: ✅ kept as in the source code | 🔧 ad
 
 Principles:
 
-- **Structural row-level cleaning** (parsing, casting, duplicates, fully-empty rows, excluding duplicate re-delivery files) runs over **all** of 2016–2019: these steps are local to each row, so incomplete months elsewhere cannot contaminate them.
+- **Structural row-level cleaning** (parsing, casting, duplicates, fully-empty rows, excluding source files whose content duplicates other files) runs over **all** of 2016–2019: these steps are local to each row, so incomplete months elsewhere cannot contaminate them.
 - **Card-level, window-dependent constructs** (infrequent users, superswipers, `ever_*` profiles, profile imputation, subsidy pre/post flags) are a different story: they ARE contaminated by incomplete data (a card can look "infrequent" just because its 2018 trips are in missing/broken files). These are therefore computed **parameterized to the analysis window** (currently Oct 2016 – Sep 2017, which we verify complete), and recomputed if/when the window expands after mapping the broken/missing files.
 - Different cleaning stages: we separate **Cleaning 1** (structural data quality: duplicates, empty rows — lives in the same notebook/table as types & formats, drops rows) from **Cleaning 2** (analysis-oriented and period-dependent cleaning: super swipers, infrequent users, implausible balances, impossible fares — implemented as *tags*, with the drop decided at analysis time). Cleaning 2 lives in a **separate notebook** whose first step is filtering to the analysis window, producing a window-restricted silver table (see pipeline structure below).
 - Pre-aggregation variable construction happens in Spark. Stata is left for the final analysis only.
@@ -26,7 +26,7 @@ One transaction-level clean **silver table**.
 | Phase | Content | Where |
 |---|---|---|
 | 1a. Silver: types & formats | Dates, numeric casting, categorical normalization. Drops no rows. | Databricks, `data-clean-silver-from2016to2019.py` |
-| 1b. Silver: Cleaning 1 | Structural data quality: duplicates, fully-empty rows, exclusion of duplicate re-delivery files. Drops objective errors. | Same notebook → same silver table |
+| 1b. Silver: Cleaning 1 | Structural data quality: duplicates, fully-empty rows, exclusion of source files whose content duplicates other files. Drops objective errors. | Same notebook → same silver table |
 | 1c. Silver: Cleaning 2 | First step: filter to the analysis window. Then analysis-oriented tags as columns: infrequent users, superswipers, implausible balances, impossible fares, early zeros. Tags only. | Other notebook → other silver table restricted to period of analysis |
 | 2. Construction | Transaction-level variables: imputed profile, transfer, trips, subsidized fares, subsidy flags. | Other notebook in Databricks - other table |
 | 3. Aggregation | Card-level dataset (all cards) + card×month panel (balanced). | Other notebook in Databricks - other table  |
@@ -67,13 +67,13 @@ Notes:
 
 
 Notes:
-* Excluded re-delivery files (window completeness check, resolved 2026-08-31). The Oct 2016 – Sep 2017 window is fully covered by 12 monthly files (`10_ValidacionesOct2016.csv` … `09_ValidacionesSept2017.csv`), all present in bronze with no zero-row days. ~10 extra files dated Sep 30 2017 also carry clearing_dates in the window but are **confirmed duplicates**: ~100% of their rows (≥99.96% per file) match a monthly-file row on card + exact transaction timestamp. They fail an exact-content match (0%) only because that delivery uses different representation conventions — e.g. for zonal trips the monthly files repeat the route in `station` (`(426) Ruta 18-13 lomitas`) while the Sep-30 delivery carries a physical stop code (`(1785) 472A01_CE|472A01`). **Decision: exclude those files entirely** via the `_source_file` filter in the silver notebook (`EXCLUDED_SOURCE_FILES`). Note: a card+timestamp+station dedup would NOT catch these cross-delivery duplicates (station differs across deliveries); excluding at the source avoids the issue.
+* Excluded duplicate source files (window completeness check, resolved 2026-08-31). The Oct 2016 – Sep 2017 window is fully covered by 12 monthly files (`10_ValidacionesOct2016.csv` … `09_ValidacionesSept2017.csv`), all present in bronze with no zero-row days. ~10 extra files dated Sep 30 2017 also carry clearing_dates in the window but are **confirmed duplicates**: ~100% of their rows (≥99.96% per file) match a monthly-file row on card + exact transaction timestamp. They fail an exact-content match (0%) only because those files use different formatting conventions — e.g. for zonal trips the monthly files repeat the route in `station` (`(426) Ruta 18-13 lomitas`) while the Sep-30 files carry a physical stop code (`(1785) 472A01_CE|472A01`). **Decision: exclude those files entirely** via the `_source_file` filter in the silver notebook (`EXCLUDED_SOURCE_FILES`). Note: a card+timestamp+station dedup would NOT catch these duplicates (station is formatted differently in each file); excluding the files avoids the issue.
 * B1. Dedup.
-    * Rationale of only dups by card and timestamp: two validations by the same card in the same second are physically one event at most, whatever the station field says; requiring station/line to match makes the dedup fragile to formatting differences across deliveries, and keeping both rows would inflate `n_trips`.
+    * Rationale of only dups by card and timestamp: two validations by the same card in the same second are physically one event at most, whatever the station field says; requiring station/line to match makes the dedup fragile to formatting differences across source files, and keeping both rows would inflate `n_trips`.
     * Diagnostics to report when running the dedup. Each dropped row is compared against **the row kept** in its (card, timestamp) group, so the diagnostics describe both sides of the pair:
-        * Number of dropped duplicates **per month**, and number of **kept rows that had ≥1 duplicate** (= real events affected) per month (a spike in one month would point to a delivery problem rather than random device double-writes).
+        * Number of dropped duplicates **per month**, and number of **kept rows that had ≥1 duplicate** (= real events affected) per month (a spike in one month would suggest a whole file was loaded twice or two files overlap, rather than random device double-writes).
         * Among dropped duplicates: how many had **matching vs differing `station`** relative to the kept row (differing station = the case the old station-based rule would have missed).
-        * Among dropped duplicates: how many came from the **same vs a different `_source_file`** than the kept row (same file = device double-write; different file = overlap between deliveries, worth investigating if the count is large).
+        * Among dropped duplicates: how many came from the **same vs a different `_source_file`** than the kept row (same file = device double-write; different file = the same trip appears in two source files, worth investigating if the count is large).
 
 ## C. Phase 1c — Cleaning 2: analysis-oriented tags
 
@@ -215,7 +215,7 @@ Note: filtered to those in the analysis sample
 
 | Table | Level | Content | Universe |
 |---|---|---|---|
-| T1. Silver 2016–2019 | transaction | types & formats (1a) + Cleaning 1 applied (1b: dedup, empty rows dropped, re-delivery files excluded) | all of 2016–2019 |
+| T1. Silver 2016–2019 | transaction | types & formats (1a) + Cleaning 1 applied (1b: dedup, empty rows dropped, duplicate source files excluded) | all of 2016–2019 |
 | T2. Window silver | transaction | T1 filtered to the analysis window (C1, by filenames) + Cleaning-2 tag columns (C2–C7) + Level-1 constructed columns (E2–E6) | all transactions in the window |
 | T3. Monthly outcomes | card×month, observed months only | `n_trips`, `has_trips`, `avg_daily_trips` (E10); `apoyo_month`, `mayor_month` (E11) | card-months with ≥1 transaction |
 | T4. Card-level dataset | card | `card_profile`/`profile_group`, `ever_*` (E12), presence flags (E13), spending windows (E14), subsidized-month counts pre/post (E15), treatment group (E16), cleaning-2 tags (C2–C7 aggregated), `first_active_month` | ALL cards in the window (allows sample in/out accounting) |
@@ -240,6 +240,29 @@ Notebooks/scripts to complete or create, in order:
 | N4 | export cell/notebook (new) | CSVs | To create: export T5 restricted to the analysis sample + T4 in full, with stable numeric codes + value labels for Stata (see A4 note) |
 | S1 | Sisbén merge script (new, outside Databricks) | analysis dataset | To create: merge exported T4/T5 with the card→person crosswalk and Sisbén III scores; build `sisbenIII_range` (E20) |
 | S2 | Stata analysis (adapt existing) | results | Adapt `sample-code/analysis/*.do` to the new panel (variable names, sample filters now explicit) |
+
+### Status figures
+
+Each notebook ends with a "Status figures" section that generates these (so they regenerate on every run and always reflect the current data):
+
+**N1 — message: "the raw data is clean and we know what we have"**
+1. Daily transactions line plot, bronze vs T1 (before/after cleaning; the daily plot already in the notebook, duplicated for T1): shows the effect of the excluded files + dedup, and the data gaps in 2018–2019 that justify the Oct16–Sep17 window.
+2. Month×day coverage heatmap (already in the notebook): the map of which days have data, with the verified window marked.
+3. Cleaning waterfall: bar per stage — rows in bronze → after excluding duplicate source files → after dropping fully-empty rows → after dedup (= T1) — with row counts and % dropped at each step.
+4. Dropped duplicates per month (from the B1 diagnostics): flat = sporadic device double-writes; a spike in one month = a file loaded twice, investigate.
+
+**N2 — message: "this is what the analysis sample looks like"**
+1. Incidence of each tag: % of cards and % of transactions flagged by infrequent (C2), superswiper (C3), balance > 1M (C5), impossible fare (C6), early zero (C7). The key figure of this stage: how much each cleaning decision weighs.
+2. Transactions by `profile_group` per month (lines or stacked area) — this doubles as the pending informational check on `adultopv` and `frecuente`.
+3. `balance_before` > 1M rows by date — this is the pending informational check of C5.
+4. Distribution of distinct days per card in the window, with a line at 12: shows what the infrequent-user threshold cuts.
+
+**N3 — message: "the treatment groups exist and make sense"**
+1. The fare table, visual: modal fares by profile × fare period with their frequencies (E1) — validates the identification of subsidized trips.
+2. % of apoyo cards' trips at the subsidized fare, by month: the April 2017 reform and the August 2017 glitch must be visible here — best single sanity check of the whole pipeline.
+3. Sample funnel: all cards → in window → `in_6m_bef & in_6m_aft` → no cleaning tags → single profile → assigned to a group. Answers "how many are in/out of the sample".
+4. Number of cards per treatment group (kept/lost/gain/never, for apoyo and mayor).
+5. Mean `n_trips` per month by treatment group: raw pre-trends — the preview of the final analysis.
 
 ## Pending informational checks (decisions already made; these just size them)
 
