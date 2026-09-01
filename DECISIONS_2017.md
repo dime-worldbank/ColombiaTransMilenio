@@ -5,9 +5,9 @@ Goal: unify in one place all the cleaning and variable-construction decisions th
 * `data-clean-silver-from2016to2019.py` (current silver notebook in Databricks)
 * code for 2017 analysis with a sample in Stata in `Colombia-BRT-IE` (currently and temporarily in `sample-code/)
 
-Decide what to keep/change/discard in the new pipeline over **all** the data (bronze 2016–2019).
+It records what we decided to keep, change, or discard in the new pipeline over **all** the data (bronze 2016–2019). All decisions here are final (the only open items are the sizing checks under "Pending informational checks").
 
-Verdict convention: ✅ keep | 🔧 adapt/change | ❓ decide (needs discussion or information) | ❌ discard. Verdicts already marked are proposals.
+Icon convention in the verdict columns: ✅ kept as in the source code | 🔧 adapted/changed vs the source code | ❌ discarded.
 
 Principles:
 
@@ -67,6 +67,7 @@ Notes:
 
 
 Notes:
+* Excluded re-delivery files (window completeness check, resolved 2026-08-31). The Oct 2016 – Sep 2017 window is fully covered by 12 monthly files (`10_ValidacionesOct2016.csv` … `09_ValidacionesSept2017.csv`), all present in bronze with no zero-row days. ~10 extra files dated Sep 30 2017 also carry clearing_dates in the window but are **confirmed duplicates**: ~100% of their rows (≥99.96% per file) match a monthly-file row on card + exact transaction timestamp. They fail an exact-content match (0%) only because that delivery uses different representation conventions — e.g. for zonal trips the monthly files repeat the route in `station` (`(426) Ruta 18-13 lomitas`) while the Sep-30 delivery carries a physical stop code (`(1785) 472A01_CE|472A01`). **Decision: exclude those files entirely** via the `_source_file` filter in the silver notebook (`EXCLUDED_SOURCE_FILES`). Note: a card+timestamp+station dedup would NOT catch these cross-delivery duplicates (station differs across deliveries); excluding at the source avoids the issue.
 * B1. Dedup.
     * Rationale of only dups by card and timestamp: two validations by the same card in the same second are physically one event at most, whatever the station field says; requiring station/line to match makes the dedup fragile to formatting differences across deliveries, and keeping both rows would inflate `n_trips`.
     * Diagnostics to report when running the dedup. Each dropped row is compared against **the row kept** in its (card, timestamp) group, so the diagnostics describe both sides of the pair:
@@ -141,7 +142,7 @@ Implementation note: the natural notebook cut is after the transaction-level sub
 | E2 | Time variables | month/week/day/dayofweek/hour/min/sec from transaction timestamp | `generate_variables.py:102-108` | ✅ trivial |
 | E3 | `transfer` and `trip` | old-code: `transfer = value < 500`; sample: `trip = value > 300` | `generate_variables.py:111-113` vs `Construction_2017_basics.do:79` | 🔧 unify: `trip = value > 300`, `transfer = !trip` |
 | E4 | `apoyo_trip`, `mayor_trip` | `value` == subsidized fare (zonal or troncal) of the period and `ever_apoyo`/`ever_mayor` == 1. **Aug 2017 = missing** (glitch: all apoyo holders got the subsidy that month) | `Construction_2017_subsidy_fares.do:167-201` | ✅ port to Spark, including the Aug 2017 rule - but also tabulate number of user paying the subsidized fare each month before cosntructing this variable|
-| E5 | `profile_group` | Analytical grouping of the canonical card profiles (A4): `adulto`, `anonymous`, `apoyo`, `mayor`, `empresarial` , `discapacidad`,  `adultopv`, `estudiantil`, `menor`, `frecuente`,  `other` | new | ✅ groups decided — `adultopv` and `frecuente` are separate from `adulto` and cannot be `never` controls (G11) |
+| E5 | `profile_group` | Analytical grouping of the canonical card profiles (A4): `adulto`, `anonymous`, `apoyo`, `mayor`, `empresarial` , `discapacidad`,  `adultopv`, `estudiantil`, `menor`, `frecuente`,  `other` | new | ✅ groups decided — `adultopv` and `frecuente` are separate from `adulto` and cannot be `never` controls, regardless of when they appear in the data. Informational check to run: transactions and distinct cards by month for these two profiles, to know their size within the window |
 | E6 | Station fix for SITP | If operator ≠ trunk, use `station_access` instead of `station` | `generate_variables.py:172-174` | 🔧 include as a placeholder, along with deeper station cleaning (old-code's station/geo dictionaries) to implement later |
 | E7 | `real_balance_after`, `negative_trip`, `negative_trip_number` | `balance_before - value`; dummy < 0; streak of consecutive negatives (up to 5) | `generate_variables.py:74-99` | 🔧 Placeholder but do not add now since the final analysis does not use them (add later) |
 | E8 | `transfer_time` | Minutes since the previous transaction if it's a transfer; 0 if > 95 min | `generate_variables.py:116-124` | ❌ only used by fraud_flag which was not used in later cleaning - do not construct |
@@ -164,7 +165,7 @@ Note:
 | E12 | `ever_*` per profile group + exclusivity | Sample-code: per-card max of dummies for {adulto, apoyo, mayor} only; if a card is "ever" more than one of the three, all set to missing (excluded). Mixtures with ANY other profile (anonymous, empresarial, …) were silently ignored | `Construction_2017_basics.do:107-125` | 🔧 use the ORIGINAL profile (no imputation, per §D) and **extend the exclusivity to all non-anonymous profile groups** (E5): a card is classified only if it is "ever" exactly ONE non-anonymous group; anonymous records never break exclusivity (known trunk glitch, tolerated as in the sample). So "adulto" = always adulto except anonymous records. Tag switcher cards (§D) |
 | E13 | Presence flags | `in_6m_bef` (card appears in months −6 to −1), `in_6m_aft` (months 0 to 5) relative to Apr 2017 | `Construction_2017_basics.do:60-73` | ✅ port; parameterize the reform date and windows |
 | E14 | Spending by window | `tot_value_no_tr_*`: total paid on trips (no transfers) in windows −6/−1, 0/5, 6/11, 12/17 | `Construction_2017_basics.do:138-167` | ✅ port |
-| E15 | Subsidized months in pre/post windows | counts `*_m_in_6m_bef`, `*_m_in_18m_aft` of subsidized months (E11) and threshold indicators | `Construction_2017_subsidy_fares.do:204-238` | 🔧 port; note the global threshold `$sub_n_trips_cond = 1` |
+| E15 | Subsidized months in pre/post windows | counts `*_m_in_6m_bef`, `*_m_in_18m_aft` of subsidized months (E11) and threshold indicators | `Construction_2017_subsidy_fares.do:204-238` | ✅ port; threshold decided: `$sub_n_trips_cond = 1` subsidized month, same as the sample analysis |
 | E16 | Treatment groups | `kept/lost/gain/never` per type based on pre/post subsidized months (E15) + `ever_*` (E12) | `Construction_2017_balanced_panel_with_treat.do` + README §6 | ✅ port (Spark or Stata? it's lightweight post-aggregation — decide based on where the panel ends up) |
 | E17 | Card-level dataset | One row per card: profile, ever_*, presence flags, cleaning-2 tags, total counts | new | ✅ for ALL cards (allows accounting of sample in/out) |
 
@@ -222,6 +223,13 @@ Note: filtered to those in the analysis sample
 
 ## Codes
 
+Implementation context (Databricks):
+
+- Catalog/schema: `prd_mega.scolom15`. Bronze: `bronze_validaciones_from2016to2019`. Ingestion control table: `file_classification_from2016to2019`.
+- Proposed output table names (same schema): T1 `silver_validaciones_from2016to2019`, T2 `silver_validaciones_2017window`, T3 `monthly_outcomes_2017`, T4 `cards_2017`, T5 `panel_2017`.
+- Window parameters: reform month = 2017-04; analysis window = Oct 2016 – Sep 2017 (clearing dates); always parameterized, never hardcoded inline.
+- ⚠️ Input still missing from this doc: the exact names of the ~10 excluded Sep-30 files (they are in the output of the "Window files" diagnostic cell in N1) — paste them into `EXCLUDED_SOURCE_FILES` in N1 and record them here.
+
 Notebooks/scripts to complete or create, in order:
 
 | # | Code | Produces | Status / to do |
@@ -233,19 +241,10 @@ Notebooks/scripts to complete or create, in order:
 | S1 | Sisbén merge script (new, outside Databricks) | analysis dataset | To create: merge exported T4/T5 with the card→person crosswalk and Sisbén III scores; build `sisbenIII_range` (E20) |
 | S2 | Stata analysis (adapt existing) | results | Adapt `sample-code/analysis/*.do` to the new panel (variable names, sample filters now explicit) |
 
-## G. Open decisions  (checklist for discussion based on some discrepancies between different codes)
+## Pending informational checks (decisions already made; these just size them)
 
-1. ✅ **RESOLVED (updated 2026-08-31, supersedes earlier rule-(1) proposal).** §D/E12: baseline = **original profile, no imputation** (as the sample analysis, which discarded `account_fixed`), with exclusivity extended to all non-anonymous profile groups (anonymous mixtures tolerated — known trunk glitch). Tag implausible/plausible switchers. Robustness: (a) rebuild classification with rule (2) imputation (the rule the old production pipeline most likely ran); (b) exclude tagged switcher cards from the comparison group.
-2. ✅ **RESOLVED (2026-08-31).** C5 (ex B2): balances > 1M — tag (in the Cleaning 2 window notebook), and check in which dates it happens.
-3. ✅ **RESOLVED** (C2 verdict): infrequent user = **< 12 distinct days within the 12-month analysis window** (days criterion, per the `data-clean.py` precedent). Tag.
-4. ✅ **RESOLVED** (C3 verdict): keep old-code thresholds (>100 in a day, or >20/day on more than 2 days). Tag. Fix the `data-clean.py` bug if that dataset is reused.
-5. ✅ **RESOLVED** (C4/E8 verdicts): discard fraud_flag (use C3 instead); do not construct transfer_time.
-6. ✅ **RESOLVED** (E7 verdict): negative_trip vars not used in the final analysis — placeholder only, not built now.
-7. ✅ **RESOLVED.** E11/E15: `>= 30` for E11 (see its note: pre-reform cap was 40); subsidized-months threshold `$sub_n_trips_cond = 1`, same as the sample analysis.
-8. ✅ **RESOLVED (2026-08-31).** E19: zero-coding follows the sample-analysis rule as is (zeros on all synthetic rows, including before `first_active_month`); `first_active_month` kept in the card-level table for a robustness restriction at analysis time.
-9. ✅ **RESOLVED (2026-08-31).** B1: duplicate definition fixed as **card + exact timestamp** (drop all but the first), robust to station/line formatting differences; with per-month, station-match and source-file diagnostics reported at dedup time (see B1 note).
-10. ✅ **RESOLVED (2026-08-31).** Completeness check for Oct 2016 – Sep 2017: the 12 expected monthly files (`10_ValidacionesOct2016.csv` … `09_ValidacionesSept2017.csv`) are all present in bronze. The ~10 extra files dated Sep 30 2017 with clearing_date in the window are **confirmed duplicates**: ~100% of their rows (≥99.96% per file) match a monthly-file row on card + exact transaction timestamp. They failed the exact-content match (0%) only because the delivery uses different representation conventions — eyeball check: for zonal trips the monthly files repeat the route in `station` (e.g. `(426) Ruta 18-13 lomitas`) while the Sep-30 delivery carries a physical stop code (e.g. `(1785) 472A01_CE|472A01`) and an abbreviated line label. **Decision: exclude the extra files from the window**, implemented as a `_source_file` filter when building silver. Note for B1: a card+timestamp+station dedup would NOT catch cross-delivery duplicates precisely because `station` differs across deliveries; excluding the files at the source avoids the issue entirely.
-11. ✅ **RESOLVED.** E5 `profile_group`: `(101) Adulto PV` and `(014) Usuario frecuente` are their own groups (`adultopv`, `frecuente`), NOT counted as `adulto` (so neither can be a `never` control) — regardless of when they appear in the data. Informational check still to run: transactions and distinct cards by month for these two profiles, to know their size within the window.
+- C5: in which dates do the `balance_before` > 1M rows concentrate.
+- E5: transactions and distinct cards by month for `(101) Adulto PV` and `(014) Usuario frecuente`.
 
 ## Notes on old-code (so we don't lose them)
 

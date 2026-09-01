@@ -120,3 +120,5 @@ token.*
 tokens.*
 token/
 tokens/
+/old-code
+/sample-code
