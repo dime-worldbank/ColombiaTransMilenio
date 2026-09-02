@@ -1,10 +1,20 @@
 # Bogotá TuLlave Smartcard Data Analysis
 
-Analysis of TransMilenio (TM) smartcard validation data for Bogotá's BRT system. The project studies transit usage patterns, focusing on the impact of fare subsidy policies (Incentivo Sisbén / Apoyo Ciudadano) on ridership.
+Analysis of TransMilenio (TM) smartcard validation data for Bogotá's BRT system. The project studies transit usage patterns, focusing on the impact of fare subsidy policies (Incentivo Sisbén / Apoyo Ciudadano) on ridership. The current focus is the April 2017 subsidy reform, analyzed in [`2017-reform/`](2017-reform/).
 
 Two distinct data periods exist due to a card system migration:
 - **2016–2019**: numeric card numbers, mixed validation types in single files
 - **Since 2020**: alphanumeric card numbers, separate files per validation type (Cable, Dual, Troncal, Zonal)
+
+
+## Repository structure
+
+| Location | Contents |
+| --- | --- |
+| root | Data pipeline notebooks (Databricks), one per stage |
+| `2017-reform/` | 2017 reform analysis: window cleaning/tags, construction of analysis tables, export to Stata. `DECISIONS_2017.md` is the source of truth for all data decisions in this analysis |
+| `old-code/` | Legacy Python/notebook code (gitignored, reference only) |
+| `sample-code/` | Legacy Stata code for the 2017 analysis on a sample (gitignored, reference only) |
 
 
 ## Data Storage
@@ -47,8 +57,9 @@ Classical file storage (~0.7 TB). Data moves through stages:
 │   │   │   └── ValidacionZonal/  (~2,357 files: csv + zip)
 │   │   ├── Recharges/            Recharges data (decompressed)
 │   │   └── byheader_dir/         ⚠️ TO REMOVE — legacy physical copy by header
-│   ├── Construct/                ⚠️ Old workflow outputs — since 2020 only, 1% & 10% samples
-│   │   │  Produced by: data-sample · constr-treatment-groups · constr-monthly-panel-treatment · data-analyze-ScenariosSDM
+│   ├── Construct/
+│   │   ├── export_2017/          ✅ Current — 2017 reform exports: cards_2017.csv, panel_2017.csv, import_2017.do (→ data-export-2017)
+│   │   │  Everything below: old workflow outputs — since 2020 only, 1% & 10% samples
 │   │   ├── ValidacionDual/, ValidacionTroncal/, ValidacionZonal/  (intermediate subfolders)
 │   │   ├── treatment_groups_sample[1|10].csv         → constr-treatment-groups
 │   │   ├── panel_with_treatment_sample[1|10].csv     → constr-monthly-panel-treatment
@@ -58,154 +69,108 @@ Classical file storage (~0.7 TB). Data moves through stages:
 │   │   ├── daily_byprofile*.csv, df_clean_relevant_sample.csv → data-sample (from old parquets)
 │   │   ├── recharges2017_sample_apoyo10pct.csv               → recharges-clean-and-sample (2017 recharges, apoyo card 10% sample)
 │   │   └── apoyo_subsidy_cards_May24.csv, transactions_2025_until2025-04-26.csv
-│   ├── Clean/                    ⚠️ TO REMOVE — contains only timing-old-cleaning/ subfolder
-│   │                             Legacy timing tests from old loop-through-files cleaning approach
+│   ├── Clean/                    ⚠️ TO REMOVE — contains only timing-old-cleaning/ subfolder (legacy timing tests)
 │   └── bogota-hdfs/              Parquet files from old pipeline — validaciones only, no recharges
-│       ├── parquet_df_raw_2020-2024_withdups   ✅ since2020 confirmed — ~4.37B rows, raw with duplicates
-│       ├── df_clean_relevant                   ✅ since2020 confirmed — cleaned & filtered for relevant cards (Dec 2019–Oct 2024, ~3.45B rows, alphanumeric cards)
-│       ├── df_clean_relevant_sample1           ✅ since2020 confirmed — 1% sample of df_clean_relevant
-│       ├── df_clean_relevant_sample10          ✅ since2020 confirmed — 10% sample of df_clean_relevant
-│       ├── parquet_df_clean_2020-2024_temp     ✅ since2020 confirmed (by name) — partial/temp run
-│       ├── intermediate/                       ✅ since2020 confirmed — card-level aggregates (superswipers, freq, usage_count_day, regular-users-2022-2024)
-│       └── sample-will/                        ✅ confirmed 2016–2019 — Aug 2017–May 2018, numeric card IDs; validaciones + treatment vars; produced outside data-clean
+│       ├── parquet_df_raw_2020-2024_withdups   since2020 — ~4.37B rows, raw with duplicates
+│       ├── df_clean_relevant                   since2020 — cleaned & filtered for relevant cards (Dec 2019–Oct 2024, ~3.45B rows, alphanumeric cards)
+│       ├── df_clean_relevant_sample1           since2020 — 1% sample of df_clean_relevant
+│       ├── df_clean_relevant_sample10          since2020 — 10% sample of df_clean_relevant
+│       ├── parquet_df_clean_2020-2024_temp     since2020 — partial/temp run
+│       ├── intermediate/                       since2020 — card-level aggregates (superswipers, freq, usage_count_day, regular-users-2022-2024)
+│       └── sample-will/                        2016–2019 — Aug 2017–May 2018, numeric card IDs; validaciones + treatment vars; produced outside data-clean
 │
 └── file_to_header/               ⚠️ Legacy folder (can be removed)
 ```
 
 ### Delta Tables: `prd_mega.scolom15`
 
-#### Existing tables
-
 | Table | Description | Status |
 | --- | --- | --- |
-| `file_classification_since2020` | Maps each raw file (since 2020) to its per-file classification metadata (encoding, delimiter, archive format, header group, status) | ✅ Active (refactored July 2026) |
-| `tm_bronze` | Old name for since2020 bronze table but EMPTY | ⚠️ To rename and populate → `bronze_validaciones_since2020` |
-| `bronze_raw_staging` | Auxiliary staging table for COPY INTO attempts | ⚠️ Legacy (failed approach, can be dropped) |
+| `file_classification_since2020` | Maps each raw file (since 2020) to its per-file classification metadata (encoding, delimiter, archive format, header group, status) | ✅ Active |
+| `file_classification_from2016to2019` | Same, for the 2016–2019 raw files | ✅ Populated |
+| `bronze_validaciones_from2016to2019` | Unified bronze table for 2016–2019 validaciones (numeric cards) | ✅ Populated |
+| `silver_validaciones_oct2016tosep2017` | Clean validaciones restricted to the 2017 analysis window (T1) | ✅ Populated |
+| `silver_validaciones_oct2016tosep2017_tags` | Window silver + cleaning tags and constructed columns (T2) | ✅ Populated |
+| `monthly_outcomes_2017` | Card × month outcomes for the 2017 analysis (T3) | ✅ Populated |
+| `cards_2017` | One row per card: presence, spending, treatment group (T4) | ✅ Populated |
+| `panel_2017` | Balanced card × month panel for the analysis sample (T5) | ✅ Populated |
 | `recargas_2017to2019_raw` | Raw recharges data 2017–2019 (28 columns) | ✅ Populated |
+| `tm_bronze` | Old name for since2020 bronze table, EMPTY | ⚠️ To rename and populate → `bronze_validaciones_since2020` |
+| `bronze_raw_staging` | Auxiliary staging table for COPY INTO attempts | ⚠️ Legacy (failed approach, can be dropped) |
 
-#### Tables to create
-
-| Table | Description |
-| --- | --- | 
-| `file_classification_from2016to2019` | Maps each raw file (2016–2019) to its per-file classification metadata | 
-| `bronze_validaciones_since2020` | Unified bronze table for since2020 validaciones (replaces `tm_bronze`) | 
-| `bronze_validaciones_from2016to2019` | Unified bronze table for 2016–2019 validaciones (numeric cards) | 
-| `silver_validaciones_since2020` | Deduplicated, clean validaciones  | 
-| `silver_validaciones_from2016to2019` | Deduplicated, clean validaciones  | 
+Still to create: `bronze_validaciones_since2020` and `silver_validaciones_since2020` (same medallion pattern as 2016–2019).
 
 
 ## Code Structure
 
-### Notebooks
+All `.py` files are Databricks notebooks. The pipelines follow a medallion architecture: raw files → header classification (Delta control table, no file copying) → bronze (unified schema) → silver (clean, deduplicated) → analysis tables.
 
-#### Data Pipeline (since 2020)
+### Pipeline: 2016–2019 validaciones (numeric cards)
+
+| Notebook | Purpose | Status |
+| --- | --- | --- |
+| `data-organize-fromDocuments` | Moved old data from `/Documents/` to `/Workspace/Raw/from2016to2019/` | ✅ Done (ran once) |
+| `data-byheader-from2016to2019` | Classifies files by header/format/encoding → `file_classification_from2016to2019` | ✅ Done |
+| `data-ingest-bronze-from2016to2019` | Loads files per classification, maps columns to unified schema → `bronze_validaciones_from2016to2019` | ✅ Done |
+| `data-clean-silver-from2016to2019` | Bronze → silver: parses dates, casts numerics, maps categoricals, excludes duplicate source files, drops empty rows, dedups. Cleaning and diagnostics run over all of 2016–2019; the saved table keeps only the analysis window → `silver_validaciones_oct2016tosep2017` | ✅ Run for the 2017 window |
+
+### 2017 reform analysis (`2017-reform/`)
+
+All decisions (cleaning rules, tags, window, treatment definitions) are documented in [`2017-reform/DECISIONS_2017.md`](2017-reform/DECISIONS_2017.md) — the source of truth for this analysis.
+
+| Notebook | Purpose | Output |
+| --- | --- | --- |
+| `data-clean2-silver-2017window` | Adds cleaning tags (tags only — no rows dropped) and constructed columns (time/trip variables, profile group, imputed profile) to the window silver | `silver_validaciones_oct2016tosep2017_tags` |
+| `data-construction-2017` | Card classification, fare table, subsidized trips; builds the three analysis tables | `monthly_outcomes_2017`, `cards_2017`, `panel_2017` |
+| `data-export-2017` | Exports cards and panel to CSV for Stata, with stable numeric treatment codes, sequential `card_id`, and a generated `import_2017.do` | `/Workspace/Construct/export_2017/` |
+
+Analysis continues locally in Stata from the exported files.
+
+### Pipeline: since 2020 validaciones (alphanumeric cards)
 
 | Notebook | Purpose | Schedule | Status |
 | --- | --- | --- | --- |
 | `data-fetch` | Downloads newest data from TM GCloud API to `/Data/` | Mondays (job) | ✅ Active |
-| `data-organize-fromDocuments` | Moves old data from `/Documents/` to `/Workspace/Raw/` | Ran once | ✅ Done |
 | `data-organize-fromData` | Moves new downloads from `/Data/` to `/Workspace/Raw/since2020/` | Mondays (job) | ✅ Active |
-| `data-byheader-since2020` | Classifies files by header → `file_classification_since2020` table (no file copying) | Mondays (job) | ✅ Active (refactored July 2026) |
-| `data-ingest-bronze` | Reads files by header group, applies column mapping, writes to `bronze_since2020` Delta table | To be created | ⬜ TODO |
-| `data-clean` | Old: imports CSVs → transforms → unions → dedup → parquet. New role: bronze→silver only | To be refactored | ⚠️ Partially obsolete, to refactor |
+| `data-byheader-since2020` | Classifies files by header → `file_classification_since2020` (no file copying) | Mondays (job) | ✅ Active |
+| `data-ingest-bronze` | Loads files per classification, maps columns to unified schema → `bronze_validaciones_since2020` | — | ⬜ Written, to run |
+| `data-clean` | Old workflow cleaning (CSVs → transform → union → dedup → parquet); to be refactored into bronze → silver only | — | ⚠️ Legacy, to refactor |
 
-**To add: construction, Gold tables, samples**
+Still to add: silver, gold/samples.
 
-#### Data Pipeline (from 2016 to 2019)
-
-| Notebook | Purpose | Status |
-| --- | --- | --- |
-| `data-organize-fromDocuments` | Moved 2016–2019 data from `/Documents/` to `/Workspace/Raw/from2016to2019/` | ✅ Done |
-| `data-byheader-from2016to2019` | Classify files by header (headers one–seven defined but never applied) | ⬜ TODO |
-| `data-ingest-bronze-from2016to2019` | Ingest into `bronze_from2016to2019` table | ⬜ TODO |
-
-
-
-**To add: cleaning, construction, Gold tables, samples**
-
-#### Recharges Pipeline
+### Recharges
 
 | Notebook | Purpose | Status |
 | --- | --- | --- |
-| `recharges-clean-and-sample` | Loads 2017–2019 recharges from `/Documents/Recharges2017-2019/`, writes to `recargas_2017to2019_raw` Delta table | ✅ Done |
+| `recharges-clean-and-sample` | Loads 2017–2019 recharges from `/Documents/Recharges2017-2019/` → `recargas_2017to2019_raw`; samples apoyo cards | ✅ Done |
 | `recharges-analyse` | Exploratory analysis of 2025 recharges data (reads directly from `/Data/Recargas/`) | ✅ Done |
 
-#### Analysis & Construction (old workflow, uses old paths/parquets)
+### Legacy analysis (old workflow, since2020 samples)
 
-| Notebook | Purpose | Input | Output |
-| --- | --- | --- | --- |
-| `data-sample` | Samples cards (apoyo/subsidy users), creates treatment identifiers | Old parquets + byheader_dir | `Construct/*.csv` |
-| `constr-treatment-groups` | Assigns treatment groups (hadlost23, hadlost24, hadkept, gained) per card based on subsidy status across periods | `Construct/` CSVs | `treatment_groups_sample10.csv` |
-| `constr-monthly-panel-treatment` | Builds monthly panel: validaciones/trips per card-month, codes 0s, merges treatment status | `Construct/` CSVs | `panel_with_treatment_sample10.csv` |
-| `plot` | Visualizes monthly validaciones with/without coding 0s by treatment group | Panel CSV | Plots |
-| `data-analyze-ScenariosSDM` | Apoyo/subsidy card statistics (Dec 2023–May 2024) for SDM scenarios, monthly subsidy trip counts | Raw CSVs | `apoyo_stats_subsidy.csv`, `apoyo_total.csv` |
+These use the old parquet files and paths; their outputs live in `/Workspace/Construct/`.
 
-#### Exploration
+| Notebook | Purpose |
+| --- | --- |
+| `data-sample` | Samples cards (apoyo/subsidy users), creates treatment identifiers |
+| `constr-treatment-groups` | Assigns treatment groups (hadlost23, hadlost24, hadkept, gained) per card based on subsidy status across periods |
+| `constr-monthly-panel-treatment` | Builds monthly panel: validaciones/trips per card-month, codes 0s, merges treatment status |
+| `plot` | Visualizes monthly validaciones with/without coding 0s by treatment group |
+| `data-analyze-ScenariosSDM` | Apoyo/subsidy card statistics (Dec 2023–May 2024) for SDM scenarios |
+
+### Exploration
 
 | Notebook | Purpose |
 | --- | --- |
 | `explore-catalog` | Documents volume structure, lists files and folders, measures storage size |
-| `explore-2025-data` | Quick analysis of 2025 data for treatment sample cards (reads from byheader_dir) |
+| `explore-2025-data` | Quick analysis of 2025 data for treatment sample cards |
+| `explore-sample-will` | Explores the `bogota-hdfs/sample-will/` legacy sample |
 
-### Utils Folder (`/utils/`)
+### Utils
 
-| File | Purpose | Status |
-| --- | --- | --- |
-| `handle_files` | File utilities: `detect_encoding()`, `unzip_and_rename()`, `dbfs_file_exists()`, `detect_format()` | ✅ Needed (used by `data-byheader-since2020`) |
-| `setup` | Spark session config, path definitions, old `spark_df_handler` class | ⚠️ To refactor — spark session setup is unnecessary on Databricks; paths are outdated (`/mnt/DAP/...`). Keep handler class but move to `spark_df_handler` |
-| `packages` | Standard pip installs and imports | ⚠️ To refactor — bloated with unused packages; should only list what's actually needed per notebook |
-| `windows` | PySpark window function definitions for time-series operations | ✅ Needed (used by analysis notebooks) |
-| `generate_variables` | Variable generation logic for analysis (trip detection, transfer tagging) | ✅ Needed (used by `data-clean` and analysis) |
-| `spark_df_handler` | Updated `spark_df_handler` class with per-header `transform()` methods mapping raw columns to unified schema | ✅ Needed (core of ingestion logic — will be used by `data-ingest-bronze`) |
-| `import_test` | Simple import verification function | ❌ Legacy — can be removed |
+Some notebooks reference `%run ./utils/...` (file handling, packages, spark session setup, window functions, the `spark_df_handler` transform class). The `utils/` folder lives in the Databricks workspace and is not tracked in this repo.
 
 
-## Workflow: OLD (to be replaced)
-
-This workflow was built for **since 2020 data only**. It never processed 2016–2019 validaciones.
-
-The old workflow mixed ingestion, cleaning, sampling, and analysis into a tightly coupled sequence:
-
-1. **`data-fetch`** → downloads weekly data to `/Data/`
-2. **`data-organize-fromData`** → moves to `/Workspace/Raw/since2020/`
-3. **`data-byheader` (old)** → physically COPIED files into `/byheader_dir/` folders by header type (unnecessary 0.7 TB duplication)
-4. **`data-clean`** → read from `/byheader_dir/`, transformed each header group using `spark_df_handler.transform()`, unioned all into one DataFrame (~4.37B rows), removed duplicates (~0.18%), saved as parquet files. Also attempted (failed) to use `COPY INTO` for Delta ingestion.
-5. **`data-sample`** → read cleaned parquet, identified apoyo/subsidy cards, took 1% and 10% random samples, saved as CSV
-6. **`constr-treatment-groups`** → for sampled cards, determined treatment group (hadlost23, hadlost24, hadkept, gained, adulto) based on monthly subsidy payment patterns across periods
-7. **`constr-monthly-panel-treatment`** → built card-month panel with validaciones, trips, subsidy trips, coded 0s for inactive months, merged treatment status
-8. **`plot`** → monthly time series of validaciones by treatment group
-
-**Problems with old workflow:**
-- Physical file duplication in `/byheader_dir/` 
-- No Delta tables — everything in parquet files without versioning or incrementality
-- Cleaning and ingestion conflated in one notebook
-- Not incremental — full reprocessing on every run
-- `tm_bronze` table was never actually populated (COPY INTO failed)
-- Old path references (`/mnt/DAP/...`, `/dbfs/...`) in analysis notebooks
-- Only handles since2020 data — no path for 2016–2019
-
-
-## Workflow: NEW (in progress)
-
-Medallion architecture with Delta tables:
-
-### Since 2020
-
-1. ✅ **`data-fetch`** → downloads from TM API to `/Data/` _(weekly, automated)_
-2. ✅ **`data-organize-fromData`** → moves to `/Workspace/Raw/since2020/` _(weekly, automated)_
-3. ✅ **`data-byheader-since2020`** → classifies files by header, records in `file_to_header_since2020` Delta table. No file copying. _(weekly, automated)_ ⚠️ Check whether other import parameters (file types, separated by comma or semicolon, encoding). Need to be added to the table, so the import accurately considers the header _given_ other import parameters.
-4. ⬜ **`data-ingest-bronze`** → reads `file_to_header_since2020`, loads files from original paths with correct delimiter/encoding per header, maps columns to unified schema, writes to `bronze_since2020` Delta table. Incremental via `input_file` tracking.
-5. ⬜ **`data-clean-silver`** → reads bronze, deduplicates, validates, writes to silver Delta table
-6. ⬜ **Gold table** → aggregated/sampled data for analysis export
-
-### From 2016 to 2019
-
-1. ✅ **`data-organize-fromDocuments`** → moved to `/Workspace/Raw/from2016to2019/` _(done once)_
-2. ⬜ **`data-byheader-from2016to2019`** → classify ~2,671 files using headers one–seven, record in `file_to_header_from2016to2019` _(run once)_
-3. ⬜ **`data-ingest-bronze-from2016to2019`** → ingest into `bronze_from2016to2019` Delta table _(run once)_
-4. ⬜ **Silver / Gold** → same pattern as since2020
-
-### Job: `data-fetch-organize` (ID: 461593863778684)
+## Job: `data-fetch-organize` (ID: 461593863778684)
 
 Runs every Monday at 3:36 AM ET. Tasks:
 1. `data-fetch` → 2. `data-organize-fromData` → 3. `data-byheader-since2020`
@@ -213,47 +178,7 @@ Runs every Monday at 3:36 AM ET. Tasks:
 All tasks use Git source (`github.com/dime-worldbank/ColombiaTransMilenio`, branch `main`) and cluster `ITSDA_DAP_TEAM_colombiaprojecttransmileniorawdata`.
 
 
-## Next step for 2016–2019 Validaciones Data
-
-### Status
-From current workflow:
-* ✅ **`data-organize-fromDocuments`** → moved to `/Workspace/Raw/from2016to2019/` _(done once)_
-
-From old workflows
-* **Validaciones (bogota-hdfs/sample-will): yes, partially.** `sample-will/` contains Aug 2017–May 2018 validaciones with numeric card IDs, joined with treatment variables. This means the
-* **Recharges: partially.** The `recharges-clean-and-sample` notebook loaded 2017–2019 recharges into `recargas_2017to2019_raw` Delta table.
-
-
-### Known challenges for 2016–2019 data:
-- Mixed file formats: csv, txt, xls, xlsx, gz archives, zip files
-- Semicolon and comma delimiters mixed across files
-- Accented characters in column names (Spanish)
-- Some files have date columns in different formats
-- 30 subfolders for June 2018 trunk data (gz files per day)
-- `2019ER10074` folder with different structure (zip files)
-
-
-### To-do
-
-The 2016–2019 validaciones pipeline is the current priority. Files are organized in `/Workspace/Raw/from2016to2019/` (~2,671 files). Headers one–seven are already defined in `utils/spark_df_handler`. Steps in order:
-
-### 1. Create `data-byheader-from2016to2019`
-Classify each file by header type, record in `file_to_header_from2016to2019` Delta table (mirrors `data-byheader-since2020`).  Check whether other import parameters (file types, separated by comma or semicolon, encoding). Need to be added to the table, so the import accurately considers the header _given_ other import parameters.
-
-Challenges:
-- Mixed formats: csv, txt, xls, xlsx, gz, zip — need format detection before header read - **some may need decompression step first**
-- 30 `VALTRONCAL_DD-06-2018/` subfolders (each has daily gz files) → handle as batches
-- `2019ER10074/` subfolder (zip files) → unzip first or read inside zip
-- Semicolon and comma delimiters mixed across files
-
-### 2. Create `data-ingest-bronze-from2016to2019`
-Use the header mapping to load files from original paths, apply `spark_df_handler.transform()` per header group, write to `bronze_validaciones_from2016to2019` Delta table.
-
-### 3. Create `data-clean-silver-from2016to2019` (or extend `data-clean`)
-Deduplicate, standardize dates and encoding, write to `silver_validaciones_from2016to2019`.
-
-
-
 ## Questions to ask TM
+
 - Some dates have "UTC" at the end and some don't. Can we assume they are all in UTC? Or in Colombia time?
 - Can the same card number, if not used for a while, be later assigned to another person?
