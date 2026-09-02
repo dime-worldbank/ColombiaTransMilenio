@@ -3,7 +3,6 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-
 # DBTITLE 1,Index
 # MAGIC %md
 # MAGIC ## Index
@@ -49,7 +48,7 @@ T4_TABLE = "prd_mega.scolom15.cards_2017"
 T5_TABLE = "prd_mega.scolom15.panel_2017"
 
 # Output folder on the volume
-EXPORT_DIR = "/Volumes/prd_csc_mega/sColom15/Workspace/Construct/export_2017/"
+EXPORT_DIR = "/Volumes/prd_csc_mega/sColom15/vColom15/Workspace/Construct/export_2017/"
 
 # Stable numeric codes for `treatment` (never reassigned: new values must be
 # added here explicitly, existing codes are never changed)
