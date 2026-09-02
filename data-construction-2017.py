@@ -50,7 +50,7 @@ import matplotlib.dates as mdates
 
 # DBTITLE 1,Parameters
 # Input and output tables
-T2_TABLE = "prd_mega.scolom15.silver_validaciones_2017window"
+T2_TABLE = "prd_mega.scolom15.silver_validaciones_oct2016tosep2017_tags"
 T3_TABLE = "prd_mega.scolom15.monthly_outcomes_2017"
 T4_TABLE = "prd_mega.scolom15.cards_2017"
 T5_TABLE = "prd_mega.scolom15.panel_2017"
@@ -127,7 +127,11 @@ dist_months_expr = F.months_between(
 # MAGIC ---
 # MAGIC ## 3. Card classification
 # MAGIC
-# MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous). A card gets a group only if all its non-anonymous records belong to exactly ONE profile group; anonymous records never break this for the treatment groups. Cards mixing two or more non-anonymous groups get no group — they cannot be classified and will get no treatment group. The comparison group is stricter: `always_adulto` marks cards that are adulto in EVERY transaction, with no anonymous records at all.
+# MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous). 
+# MAGIC
+# MAGIC A card gets a group only if all its non-anonymous records belong to exactly ONE profile group. Cards mixing two or more non-anonymous groups get no group.
+# MAGIC
+# MAGIC The comparison group is stricter: `always_adulto` marks cards that are adulto in EVERY transaction, with no anonymous records at all.
 
 # COMMAND ----------
 
@@ -576,7 +580,63 @@ display(
 # MAGIC ---
 # MAGIC ## 8. Balanced panel → `panel_2017`
 # MAGIC
-# MAGIC The analysis sample: cards present before and after the reform, not superswipers, not infrequent, with a single profile group and an assigned treatment group. Each of them gets one row per window month; months without transactions are coded as zero trips. Card-level variables are NOT here — they live in `cards_2017` and merge at analysis time.
+# MAGIC The analysis sample: cards present before and after the reform, assigned to one of the three selected treatment groups (`never`, `apoyo_kept`, `apoyo_lost`). No filters on superswipers, infrequent users, or single-profile status. Each of them gets one row per window month; months without transactions are coded as zero trips. Card-level variables are NOT here — they live in `cards_2017` and merge at analysis time.
+
+# COMMAND ----------
+
+# DBTITLE 1,Infrequent and superswiper cards by treatment group
+# Among cards present before and after the reform in the three treatment groups,
+# how many carry each cleaning tag?
+#
+# Tag definitions (from data-clean2-silver-2017window):
+#   tag_infrequent        : active on fewer than 12 distinct days in the window
+#   tag_superswiper       : >100 transactions in one day, or >20/day on >2 days
+#   tag_implausible_switch: card went personalized → anonymous (impossible in
+#                           real life; trunk device mis-recording the profile)
+#   tag_plausible_switch  : card went anonymous → personalized with no
+#                           implausible switch (bought anonymous, then registered)
+#   n_high_balance        : count of rows where balance_before > 1,000,000 COP
+#   n_impossible_fare     : count of rows with a fare value that did not exist
+#                           under the fare scheme of its period
+#   n_early_zero          : count of rows with value = 0 before the reform
+#                           (free transfers did not exist yet)
+#   n_days_active         : distinct days with at least one transaction
+_base = (
+    spark.table(T4_TABLE)
+    .filter(
+        (F.col("in_6m_bef") == 1)
+        & (F.col("in_6m_aft") == 1)
+        & F.col("treatment").isin("never", "apoyo_kept", "apoyo_lost")
+    )
+)
+
+_diag = (
+    _base
+    .groupBy("treatment")
+    .agg(
+        F.count(F.lit(1)).alias("cards"),
+        F.sum(F.coalesce(F.col("tag_infrequent"), F.lit(0))).alias("infrequent"),
+        F.sum(F.coalesce(F.col("tag_superswiper"), F.lit(0))).alias("superswiper"),
+        F.sum(F.coalesce(F.col("tag_implausible_switch"), F.lit(0))).alias("implausible_switch"),
+        F.sum(F.coalesce(F.col("tag_plausible_switch"), F.lit(0))).alias("plausible_switch"),
+        F.sum(F.when(F.coalesce(F.col("n_high_balance"), F.lit(0)) > 0, 1).otherwise(0)).alias("any_high_balance"),
+        F.sum(F.when(F.coalesce(F.col("n_impossible_fare"), F.lit(0)) > 0, 1).otherwise(0)).alias("any_impossible_fare"),
+        F.sum(F.when(F.coalesce(F.col("n_early_zero"), F.lit(0)) > 0, 1).otherwise(0)).alias("any_early_zero"),
+        F.round(F.avg(F.coalesce(F.col("n_days_active"), F.lit(0))), 1).alias("avg_days_active"),
+    )
+    .withColumn("pct_infrequent",         F.round(100 * F.col("infrequent")         / F.col("cards"), 2))
+    .withColumn("pct_superswiper",        F.round(100 * F.col("superswiper")        / F.col("cards"), 2))
+    .withColumn("pct_implausible_switch", F.round(100 * F.col("implausible_switch") / F.col("cards"), 2))
+    .withColumn("pct_plausible_switch",   F.round(100 * F.col("plausible_switch")   / F.col("cards"), 2))
+    .withColumn("pct_any_high_balance",   F.round(100 * F.col("any_high_balance")   / F.col("cards"), 2))
+    .withColumn("pct_any_impossible_fare",F.round(100 * F.col("any_impossible_fare") / F.col("cards"), 2))
+    .withColumn("pct_any_early_zero",     F.round(100 * F.col("any_early_zero")     / F.col("cards"), 2))
+    .orderBy("treatment")
+)
+
+print("── Cleaning tags and activity among selected treatment groups ──")
+print("── cards present in the 6mo before AND 6mo after the policy change ──")
+display(_diag)
 
 # COMMAND ----------
 
@@ -586,10 +646,7 @@ df_sample_cards = (
     .filter(
         (F.col("in_6m_bef") == 1)
         & (F.col("in_6m_aft") == 1)
-        & (F.coalesce(F.col("tag_superswiper"), F.lit(0)) == 0)
-        & (F.coalesce(F.col("tag_infrequent"), F.lit(0)) == 0)
-        & (F.col("single_profile") == 1)
-        & F.col("treatment").isNotNull()
+        & F.col("treatment").isin("never", "apoyo_kept", "apoyo_lost")
     )
     .select("cardnumber")
 )
@@ -699,22 +756,23 @@ df_t4_tbl = spark.table(T4_TABLE)
 
 _f1 = df_t4_tbl
 _f2 = _f1.filter((F.col("in_6m_bef") == 1) & (F.col("in_6m_aft") == 1))
-_f3 = _f2.filter((F.coalesce(F.col("tag_superswiper"), F.lit(0)) == 0) & (F.coalesce(F.col("tag_infrequent"), F.lit(0)) == 0))
-_f4 = _f3.filter(F.col("single_profile") == 1)
-_f5 = _f4.filter(F.col("treatment").isNotNull())
+_f_never      = _f2.filter(F.col("treatment") == "never")
+_f_apoyo_kept = _f2.filter(F.col("treatment") == "apoyo_kept")
+_f_apoyo_lost = _f2.filter(F.col("treatment") == "apoyo_lost")
 
 funnel = [
     ("All cards\nin window",        _f1.count()),
     ("Present before\nand after",   _f2.count()),
-    ("Not superswiper,\nnot infrequent", _f3.count()),
-    ("Single profile\ngroup",       _f4.count()),
-    ("Assigned to a\ntreatment group", _f5.count()),
+    ("never",                        _f_never.count()),
+    ("apoyo_kept",                   _f_apoyo_kept.count()),
+    ("apoyo_lost",                   _f_apoyo_lost.count()),
 ]
 
 fig, ax = plt.subplots(figsize=(11, 5.5))
 _labels = [s[0] for s in funnel]
 _vals   = [s[1] for s in funnel]
-bars = ax.bar(_labels, _vals, color=["dimgray"] + ["steelblue"] * 3 + ["seagreen"])
+colors  = ["dimgray", "steelblue", "seagreen", "indianred", "indianred"]
+bars = ax.bar(_labels, _vals, color=colors)
 for i, (b, v) in enumerate(zip(bars, _vals)):
     txt = f"{v:,}"
     if i > 0:

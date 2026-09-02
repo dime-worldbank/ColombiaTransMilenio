@@ -50,8 +50,8 @@ import matplotlib.dates as mdates
 
 # DBTITLE 1,Parameters
 # Input and output tables
-T1_TABLE = "prd_mega.scolom15.silver_validaciones_from2016to2019"
-T2_TABLE = "prd_mega.scolom15.silver_validaciones_2017window"
+T1_TABLE = "prd_mega.scolom15.silver_validaciones_oct2016tosep2017"
+T2_TABLE = "prd_mega.scolom15.silver_validaciones_oct2016tosep2017_tags"
 
 # Analysis window and reform date
 WINDOW_START = "2016-10-01"
@@ -87,12 +87,15 @@ DAYS_HIGH_MAX   = 2
 # Implausible balance: above the maximum rechargeable amount (COP)
 BALANCE_MAX = 1_000_000
 
-# Fares that existed in each period. 0 is always allowed here: post-reform
-# zeros are legitimate transfers, pre-reform zeros get their own tag below.
-FARE_PERIODS = [
-    (WINDOW_START, "2017-03-31", [0, 200, 900, 1450, 1600, 1650, 2200]),
-    (REFORM_DATE,  WINDOW_END,   [0, 700, 900, 1000, 1550, 1600, 1700]),
+# Fare values that could not exist under the scheme of their period.
+# Pre-reform: post-reform fares (200 transfer, 1450/1650 SISBEN, 2200 full TM)
+# Post-reform: pre-reform fares (700/1000 discounts, 1550 senior SITP, 1700 full SITP)
+# Always: never a valid fare in either scheme (1600 labelled "Error?!" in old code)
+IMPOSSIBLE_FARES_BY_PERIOD = [
+    (WINDOW_START, "2017-03-31", [200, 1450, 1650, 2200]),
+    (REFORM_DATE,  WINDOW_END,   [700, 1000, 1550, 1700]),
 ]
+IMPOSSIBLE_FARES_ALWAYS = [900, 1600]
 
 # A trip pays more than this; anything at or below is a transfer
 TRIP_MIN_VALUE = 300
@@ -109,47 +112,47 @@ TRUNK_OPERATOR = "(201) Trunk agency"
 
 # COMMAND ----------
 
-# DBTITLE 1,Keep the 12 monthly files
+# DBTITLE 1,Validate monthly files and filter by transaction date
 df_t1 = spark.table(T1_TABLE)
 
-_is_window_file = F.lit(False)
-for fname in WINDOW_FILES:
-    _is_window_file = _is_window_file | F.col("_source_file").contains(fname)
+# --- Step 1: Validate source files (all expected, no extras) ---
+found_paths = [r[0] for r in df_t1.select("_source_file").distinct().collect()]
+found_basenames = {p.rsplit("/", 1)[-1] for p in found_paths}
+expected = set(WINDOW_FILES)
 
-df_win = df_t1.filter(_is_window_file)
+missing = sorted(expected - found_basenames)
+extra   = sorted(found_basenames - expected)
+
+if missing:
+    print(f"⚠️  Missing files: {missing}")
+else:
+    print(f"✅ All {len(WINDOW_FILES)} expected monthly files found.")
+if extra:
+    print(f"⚠️  Extra files not in WINDOW_FILES: {extra}")
+else:
+    print(f"✅ No extra files beyond the expected {len(WINDOW_FILES)}.")
+
+# --- Step 2: Filter by transaction date ---
+df_win = df_t1.filter(
+    F.col("fecha_transaccion").between(WINDOW_START, WINDOW_END)
+)
 
 n_t1  = df_t1.count()
 n_win = df_win.count()
-print(f"Silver rows            : {n_t1:,}")
-print(f"Window rows (12 files) : {n_win:,}  ({100*n_win/n_t1:.1f}% of silver)")
+print(f"\nSilver rows                             : {n_t1:,}")
+print(f"Window rows (fecha_transaccion filter)  : {n_win:,}  ({100*n_win/n_t1:.1f}%)")
 
-# All 12 files present?
-found_files = [r[0] for r in df_win.select("_source_file").distinct().collect()]
-missing = [f for f in WINDOW_FILES if not any(f in ff for ff in found_files)]
-if missing:
-    print(f"⚠️  Expected window files NOT found: {missing}")
-else:
-    print(f"✅ All {len(WINDOW_FILES)} monthly files found.")
-
-# Rows and clearing dates per file
+# Rows and date range per source file
 display(
     df_win
     .groupBy("_source_file")
     .agg(
         F.count(F.lit(1)).alias("rows"),
-        F.min("clearing_date").alias("min_clearing"),
-        F.max("clearing_date").alias("max_clearing"),
-        F.countDistinct("clearing_date").alias("distinct_clearing_days"),
+        F.min("fecha_transaccion").alias("min_fecha"),
+        F.max("fecha_transaccion").alias("max_fecha"),
     )
-    .orderBy("min_clearing")
+    .orderBy("min_fecha")
 )
-
-# Rows whose clearing_date falls outside the window dates. They are kept
-# (the filter is by filename); this only sizes them.
-n_outside = df_win.filter(
-    ~F.col("clearing_date").between(WINDOW_START, WINDOW_END) | F.col("clearing_date").isNull()
-).count()
-print(f"Rows with clearing_date outside [{WINDOW_START}, {WINDOW_END}] or NULL (kept): {n_outside:,}")
 
 # COMMAND ----------
 
@@ -208,13 +211,12 @@ display(
 # DBTITLE 1,Tag expressions and sizing
 tag_high_balance_expr = (F.col("balance_before") > BALANCE_MAX).cast("int")
 
-# Value not in the allowed list of its period (NULL values are not tagged)
-_impossible = F.lit(False)
-for p_start, p_end, allowed in FARE_PERIODS:
+# Value in the impossible list for its period, or always-impossible
+_impossible = F.col("value").isin(IMPOSSIBLE_FARES_ALWAYS) & F.col("value").isNotNull()
+for p_start, p_end, bad_fares in IMPOSSIBLE_FARES_BY_PERIOD:
     _impossible = _impossible | (
         F.col("fecha_transaccion").between(p_start, p_end)
-        & ~F.col("value").isin(allowed)
-        & F.col("value").isNotNull()
+        & F.col("value").isin(bad_fares)
     )
 tag_impossible_fare_expr = _impossible.cast("int")
 
@@ -237,8 +239,8 @@ display(
 )
 
 # Which values get tagged as impossible, by period
-for p_start, p_end, allowed in FARE_PERIODS:
-    print(f"\nPeriod {p_start} → {p_end} (allowed: {sorted(allowed)}) — tagged values:")
+for p_start, p_end, bad_fares in IMPOSSIBLE_FARES_BY_PERIOD:
+    print(f"\nPeriod {p_start} → {p_end} (impossible: {sorted(bad_fares)}) — tagged values:")
     display(
         df_row_tags
         .filter(F.col("fecha_transaccion").between(p_start, p_end) & (F.col("tag_impossible_fare") == 1))
@@ -396,12 +398,152 @@ df_card_switches = (
     .select("cardnumber", "tag_implausible_switch", "tag_plausible_switch")
 )
 
+_switch_stats = df_card_switches.agg(
+    F.count(F.lit(1)).alias("cards"),
+    F.sum("tag_implausible_switch").alias("cards_implausible_switch"),
+    F.sum("tag_plausible_switch").alias("cards_plausible_switch"),
+).collect()[0]
+
+_n_cards = _switch_stats["cards"]
+_n_impl  = _switch_stats["cards_implausible_switch"]
+_n_plaus = _switch_stats["cards_plausible_switch"]
+
+print(f"Total cards                : {_n_cards:,}")
+print(f"Cards implausible switch   : {_n_impl:,}  ({100*_n_impl/_n_cards:.2f}%)")
+print(f"Cards plausible switch     : {_n_plaus:,}  ({100*_n_plaus/_n_cards:.2f}%)")
+
+# COMMAND ----------
+
+# DBTITLE 1,Implausible switches: month distribution
+# Month distribution of all personalized → anonymous transition events
+_transitions_impl = (
+    _df_transitions
+    .filter((F.col("_prev_anon") == 0) & (F.col("_is_anon") == 1))  # pers → anon
+)
+
+print("Implausible (pers→anon) transition events by month:")
 display(
-    df_card_switches.agg(
-        F.count(F.lit(1)).alias("cards"),
-        F.sum("tag_implausible_switch").alias("cards_implausible_switch"),
-        F.sum("tag_plausible_switch").alias("cards_plausible_switch"),
+    _transitions_impl
+    .groupBy(F.date_format("fecha_transaccion_timestamp", "yyyy-MM").alias("month"))
+    .agg(
+        F.count(F.lit(1)).alias("transition_events"),
+        F.countDistinct("cardnumber").alias("distinct_cards"),
     )
+    .orderBy("month")
+)
+
+# COMMAND ----------
+
+# DBTITLE 1,Diagnose: why is implausible switch so high?
+# --- 1. How many pers→anon events per flagged card? ---
+# If most cards have just 1 event, the window-order may be producing
+# false transitions (e.g. ties in timestamp).
+_impl_events_per_card = (
+    _df_transitions
+    .filter((F.col("_prev_anon") == 0) & (F.col("_is_anon") == 1))
+    .groupBy("cardnumber")
+    .agg(F.count(F.lit(1)).alias("n_impl_events"))
+)
+print("Distribution of implausible-event count per flagged card:")
+display(
+    _impl_events_per_card
+    .groupBy("n_impl_events")
+    .agg(F.count(F.lit(1)).alias("cards"))
+    .orderBy("n_impl_events")
+    .limit(20)
+)
+
+# --- 2. Do tied timestamps exist? ---
+# Two rows on the same card with the exact same timestamp but different
+# profiles would create a spurious transition in either direction.
+_ties = (
+    _df_transitions
+    .groupBy("cardnumber", "fecha_transaccion_timestamp")
+    .agg(
+        F.countDistinct("card_profile").alias("n_profiles"),
+        F.count(F.lit(1)).alias("n_rows"),
+    )
+    .filter(F.col("n_profiles") > 1)
+)
+n_ties = _ties.count()
+print(f"\nCard-timestamp pairs with >1 distinct profile (ties): {n_ties:,}")
+if n_ties > 0:
+    print("Sample ties:")
+    display(_ties.limit(10))
+
+# --- 3. Show the actual profile sequence for 5 flagged cards ---
+_sample_cards = (
+    df_card_switches
+    .filter(F.col("tag_implausible_switch") == 1)
+    .select("cardnumber")
+    .limit(5)
+)
+print("\nProfile sequence for 5 implausible-switch cards:")
+display(
+    _df_transitions
+    .join(_sample_cards, "cardnumber", "inner")
+    .select("cardnumber", "fecha_transaccion_timestamp", "card_profile",
+            "value", "_is_anon", "_prev_anon", "operator_id")
+    .orderBy("cardnumber", "fecha_transaccion_timestamp")
+)
+
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Implausible switches: trunk vs zonal + transfer check
+# --- 4. Do implausible transitions happen on trunk, zonal, or both? ---
+# For each pers→anon event, check whether the CURRENT row (the one that
+# flipped to anonymous) was recorded by a trunk or zonal operator.
+print("\nImplausible transitions: operator type of the anonymous row:")
+display(
+    _df_transitions
+    .filter((F.col("_prev_anon") == 0) & (F.col("_is_anon") == 1))
+    .withColumn("operator_type", F.when(F.col("operator_id") == TRUNK_OPERATOR, "trunk").otherwise("zonal"))
+    .groupBy("operator_type")
+    .agg(
+        F.count(F.lit(1)).alias("transition_events"),
+        F.countDistinct("cardnumber").alias("distinct_cards"),
+    )
+)
+
+# And which specific operators produce these anonymous readings?
+print("\nImplausible transitions by operator_id:")
+display(
+    _df_transitions
+    .filter((F.col("_prev_anon") == 0) & (F.col("_is_anon") == 1))
+    .groupBy("operator_id")
+    .agg(
+        F.count(F.lit(1)).alias("transition_events"),
+        F.countDistinct("cardnumber").alias("distinct_cards"),
+    )
+    .orderBy(F.col("transition_events").desc())
+)
+
+# --- 5. Do these mis-recorded anonymous rows show transfers after reform? ---
+# A transfer is value <= TRIP_MIN_VALUE (covers both 0 and 300).
+_impl_zonal = (
+    _df_transitions
+    .filter((F.col("_prev_anon") == 0) & (F.col("_is_anon") == 1))
+    .filter(F.col("fecha_transaccion") >= F.lit(REFORM_DATE))
+)
+_n_impl_post = _impl_zonal.count()
+_n_impl_transfer = _impl_zonal.filter(F.col("value") <= TRIP_MIN_VALUE).count()
+_n_impl_trip     = _n_impl_post - _n_impl_transfer
+
+print(f"\nImplausible transitions after reform ({REFORM_DATE}):")
+print(f"  Total events       : {_n_impl_post:,}")
+print(f"  Transfers (≤{TRIP_MIN_VALUE})  : {_n_impl_transfer:,}  ({100*_n_impl_transfer/max(_n_impl_post,1):.2f}%)")
+print(f"  Trips (>{TRIP_MIN_VALUE})       : {_n_impl_trip:,}  ({100*_n_impl_trip/max(_n_impl_post,1):.2f}%)")
+
+# Breakdown by value for these rows
+print("\nValue distribution of post-reform implausible transitions:")
+display(
+    _impl_zonal
+    .groupBy("value")
+    .agg(F.count(F.lit(1)).alias("events"))
+    .orderBy(F.col("events").desc())
+    .limit(15)
 )
 
 # COMMAND ----------
@@ -445,6 +587,8 @@ card_profile_imputed_expr = F.when(
 profile_group_imputed_expr = F.when(
     F.col("card_profile_imputed") == "(001) Anonymous", F.lit("anonymous")
 ).otherwise(F.col("profile_group"))
+
+
 
 # COMMAND ----------
 
@@ -621,33 +765,34 @@ plt.show()
 
 # COMMAND ----------
 
-# DBTITLE 1,Figure 3: balance above 1M by date
-bal_pd = (
-    df_t2_tbl
-    .filter(F.col("tag_high_balance") == 1)
-    .groupBy("fecha_transaccion")
-    .count()
-    .orderBy("fecha_transaccion")
-    .toPandas()
-)
+# DBTITLE 1,Figure 3: balance above 1M
+# How many rows have balance_before above the threshold, and on which days?
+_high_bal = df_t2_tbl.filter(F.col("tag_high_balance") == 1)
+_n_high = _high_bal.count()
 
-if bal_pd.empty:
-    print("No rows with balance_before above 1M in the window — nothing to plot.")
+if _n_high == 0:
+    print(f"No rows with balance_before above {BALANCE_MAX:,} COP in the window.")
 else:
-    bal_pd["fecha_transaccion"] = pd.to_datetime(bal_pd["fecha_transaccion"])
-    fig, ax = plt.subplots(figsize=(13, 4.5))
-    ax.bar(bal_pd["fecha_transaccion"], bal_pd["count"], width=1.0, color="indianred")
-    ax.axvline(pd.Timestamp(REFORM_DATE), color="red", linewidth=1.2, linestyle="--", label=f"Reform ({REFORM_DATE})")
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-    ax.tick_params(axis="x", rotation=45)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
-    ax.set_ylabel("Rows with balance_before > 1M", fontsize=12)
-    ax.set_title("Rows with balance above 1M by transaction date (do they concentrate on specific dates?)",
-                 fontsize=13, fontweight="bold")
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    plt.show()
+    _days_affected = (
+        _high_bal
+        .groupBy("fecha_transaccion")
+        .agg(F.count(F.lit(1)).alias("flagged"))
+        .orderBy("fecha_transaccion")
+    )
+    # Total transactions on each affected day
+    _daily_totals = (
+        df_t2_tbl
+        .groupBy("fecha_transaccion")
+        .agg(F.count(F.lit(1)).alias("total"))
+    )
+    _summary = (
+        _days_affected
+        .join(_daily_totals, "fecha_transaccion")
+        .withColumn("pct", F.format_string("%.6f%%", 100 * F.col("flagged rows") / F.col("total rows")))
+        .orderBy("fecha_transaccion")
+    )
+    print(f"Balance above {BALANCE_MAX:,} COP: {_n_high:,} row(s) on {_summary.count()} day(s).")
+    display(_summary)
 
 # COMMAND ----------
 
@@ -680,3 +825,174 @@ ax.set_title(f"Distinct days per card in the window (red = tagged infrequent, {1
 ax.legend(fontsize=10)
 plt.tight_layout()
 plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Figure 5: adulto cards before and after anonymous imputation
+# Distinct adulto cards per day: original profile vs imputed profile
+_adulto_orig = (
+    df_t2_tbl
+    .filter(F.col("profile_group") == "adulto")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_original"))
+)
+
+_adulto_imputed = (
+    df_t2_tbl
+    .filter(F.col("profile_group_imputed") == "adulto")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_imputed"))
+)
+
+imputation_pd = (
+    _adulto_orig
+    .join(_adulto_imputed, "fecha_transaccion", "outer")
+    .orderBy("fecha_transaccion")
+    .toPandas()
+)
+imputation_pd["fecha_transaccion"] = pd.to_datetime(imputation_pd["fecha_transaccion"])
+imputation_pd = imputation_pd.fillna(0)
+
+fig, ax = plt.subplots(figsize=(13, 5))
+ax.plot(imputation_pd["fecha_transaccion"], imputation_pd["cards_original"],
+        linewidth=1.2, color="steelblue", label="Original profile", alpha=0.8)
+ax.plot(imputation_pd["fecha_transaccion"], imputation_pd["cards_imputed"],
+        linewidth=1.2, color="indianred", label="Imputed profile", alpha=0.8)
+ax.fill_between(imputation_pd["fecha_transaccion"],
+                imputation_pd["cards_imputed"], imputation_pd["cards_original"],
+                alpha=0.2, color="steelblue", label="Reclassified as anonymous")
+ax.axvline(pd.Timestamp(REFORM_DATE), color="red", linewidth=1.2, linestyle="--",
+           label=f"Reform ({REFORM_DATE})")
+ax.xaxis.set_major_locator(mdates.MonthLocator())
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+ax.tick_params(axis="x", rotation=45)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+ax.set_xlabel("Transaction date (daily)", fontsize=12)
+ax.set_ylabel("Distinct adulto cards", fontsize=12)
+ax.set_title("Adulto cards per day: original vs imputed profile\n"
+             "(shaded area = reclassified as anonymous by imputation)",
+             fontsize=13, fontweight="bold")
+ax.legend(fontsize=10)
+plt.tight_layout()
+plt.show()
+
+_total_orig = imputation_pd["cards_original"].sum()
+_total_imp  = imputation_pd["cards_imputed"].sum()
+print(f"Total adulto card-days (original) : {_total_orig:,.0f}")
+print(f"Total adulto card-days (imputed)  : {_total_imp:,.0f}")
+print(f"Reclassified to anonymous         : {_total_orig - _total_imp:,.0f} "
+      f"({100*(_total_orig - _total_imp)/_total_orig:.1f}%)")
+
+# COMMAND ----------
+
+# DBTITLE 1,Figure 6: anonymous cards before and after imputation
+# Distinct anonymous cards per day: original profile vs imputed profile
+_anon_orig = (
+    df_t2_tbl
+    .filter(F.col("profile_group") == "anonymous")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_original"))
+)
+
+_anon_imputed = (
+    df_t2_tbl
+    .filter(F.col("profile_group_imputed") == "anonymous")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_imputed"))
+)
+
+anon_pd = (
+    _anon_orig
+    .join(_anon_imputed, "fecha_transaccion", "outer")
+    .orderBy("fecha_transaccion")
+    .toPandas()
+)
+anon_pd["fecha_transaccion"] = pd.to_datetime(anon_pd["fecha_transaccion"])
+anon_pd = anon_pd.fillna(0)
+
+fig, ax = plt.subplots(figsize=(13, 5))
+ax.plot(anon_pd["fecha_transaccion"], anon_pd["cards_original"],
+        linewidth=1.2, color="steelblue", label="Original profile", alpha=0.8)
+ax.plot(anon_pd["fecha_transaccion"], anon_pd["cards_imputed"],
+        linewidth=1.2, color="indianred", label="Imputed profile", alpha=0.8)
+ax.fill_between(anon_pd["fecha_transaccion"],
+                anon_pd["cards_original"], anon_pd["cards_imputed"],
+                alpha=0.2, color="indianred", label="Gained from other profiles")
+ax.axvline(pd.Timestamp(REFORM_DATE), color="red", linewidth=1.2, linestyle="--",
+           label=f"Reform ({REFORM_DATE})")
+ax.xaxis.set_major_locator(mdates.MonthLocator())
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+ax.tick_params(axis="x", rotation=45)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+ax.set_xlabel("Transaction date (daily)", fontsize=12)
+ax.set_ylabel("Distinct anonymous cards", fontsize=12)
+ax.set_title("Anonymous cards per day: original vs imputed profile\n"
+             "(shaded area = reclassified from other profiles by imputation)",
+             fontsize=13, fontweight="bold")
+ax.legend(fontsize=10)
+plt.tight_layout()
+plt.show()
+
+_total_orig = anon_pd["cards_original"].sum()
+_total_imp  = anon_pd["cards_imputed"].sum()
+print(f"Total anonymous card-days (original) : {_total_orig:,.0f}")
+print(f"Total anonymous card-days (imputed)  : {_total_imp:,.0f}")
+print(f"Gained from other profiles           : {_total_imp - _total_orig:,.0f} "
+      f"({100*(_total_imp - _total_orig)/max(_total_orig,1):.1f}%)")
+
+# COMMAND ----------
+
+# DBTITLE 1,Figure 7: apoyo cards before and after anonymous imputation
+# Distinct apoyo cards per day: original profile vs imputed profile
+_apoyo_orig = (
+    df_t2_tbl
+    .filter(F.col("profile_group") == "apoyo")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_original"))
+)
+
+_apoyo_imputed = (
+    df_t2_tbl
+    .filter(F.col("profile_group_imputed") == "apoyo")
+    .groupBy("fecha_transaccion")
+    .agg(F.countDistinct("cardnumber").alias("cards_imputed"))
+)
+
+apoyo_pd = (
+    _apoyo_orig
+    .join(_apoyo_imputed, "fecha_transaccion", "outer")
+    .orderBy("fecha_transaccion")
+    .toPandas()
+)
+apoyo_pd["fecha_transaccion"] = pd.to_datetime(apoyo_pd["fecha_transaccion"])
+apoyo_pd = apoyo_pd.fillna(0)
+
+fig, ax = plt.subplots(figsize=(13, 5))
+ax.plot(apoyo_pd["fecha_transaccion"], apoyo_pd["cards_original"],
+        linewidth=1.2, color="steelblue", label="Original profile", alpha=0.8)
+ax.plot(apoyo_pd["fecha_transaccion"], apoyo_pd["cards_imputed"],
+        linewidth=1.2, color="indianred", label="Imputed profile", alpha=0.8)
+ax.fill_between(apoyo_pd["fecha_transaccion"],
+                apoyo_pd["cards_imputed"], apoyo_pd["cards_original"],
+                alpha=0.2, color="steelblue", label="Reclassified as anonymous")
+ax.axvline(pd.Timestamp(REFORM_DATE), color="red", linewidth=1.2, linestyle="--",
+           label=f"Reform ({REFORM_DATE})")
+ax.xaxis.set_major_locator(mdates.MonthLocator())
+ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+ax.tick_params(axis="x", rotation=45)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
+ax.set_xlabel("Transaction date (daily)", fontsize=12)
+ax.set_ylabel("Distinct apoyo cards", fontsize=12)
+ax.set_title("Apoyo cards per day: original vs imputed profile\n"
+             "(shaded area = reclassified as anonymous by imputation)",
+             fontsize=13, fontweight="bold")
+ax.legend(fontsize=10)
+plt.tight_layout()
+plt.show()
+
+_total_orig = apoyo_pd["cards_original"].sum()
+_total_imp  = apoyo_pd["cards_imputed"].sum()
+print(f"Total apoyo card-days (original) : {_total_orig:,.0f}")
+print(f"Total apoyo card-days (imputed)  : {_total_imp:,.0f}")
+print(f"Reclassified to anonymous        : {_total_orig - _total_imp:,.0f} "
+      f"({100*(_total_orig - _total_imp)/max(_total_orig,1):.1f}%)")
