@@ -74,9 +74,9 @@ FARE_PERIODS_M = [
 # adulto cards must be adulto in every transaction (never anonymous), while
 # treatment cards may have an anonymous stretch before registering
 ANALYSIS_GROUPS = {
-    "adulto": ["adulto"],
-    "apoyo":  ["apoyo", "apoyo+anonymous"],
-    "mayor":  ["mayor", "mayor+anonymous"],
+    "always_adulto": ["adulto"],
+    "apoyo":         ["apoyo", "anonymous+apoyo"],
+    "mayor":         ["mayor", "anonymous+mayor"],
 }
 
 # Modal fares are computed over each card's first trips of the month, up to this rank
@@ -135,9 +135,9 @@ dist_months_expr = F.months_between(
 # MAGIC
 # MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous).
 # MAGIC
-# MAGIC `profile_groups` lists every profile group the card shows across the window, sorted with anonymous last (e.g. `apoyo+anonymous`).
+# MAGIC `profile_groups` lists every profile group the card shows across the window, with anonymous first (e.g. `anonymous+apoyo`) — chronological under the imputation, where the anonymous block always precedes the personalized tail.
 # MAGIC
-# MAGIC `card_group` assigns the analysis group directly from that history: comparison `adulto` cards are adulto in EVERY transaction with no anonymous records, while treatment `apoyo`/`mayor` cards may have an anonymous stretch before registering. Any other history (mixed groups, anonymous-only, other profiles) gets no group.
+# MAGIC `card_group` assigns the analysis group directly from that history: comparison `always_adulto` cards are adulto in EVERY transaction with no anonymous records, while treatment `apoyo`/`mayor` cards may have an anonymous stretch before registering (`apoyo` covers both `apoyo` and `anonymous+apoyo` histories; same for `mayor`). Any other history (mixed groups, anonymous-only, other profiles) gets no group.
 
 # COMMAND ----------
 
@@ -159,12 +159,12 @@ df_cards_profile = (
         F.collect_set(_non_anon_group).alias("_groups"),
         F.max((F.col("profile_group_imputed") == "anonymous").cast("int")).alias("_has_anon"),
     )
-    # Full history: all groups the card shows, sorted, anonymous last
+    # Full history: all groups the card shows, sorted, anonymous first
     .withColumn(
         "_groups_all",
         F.concat(
-            F.array_sort("_groups"),
             F.when(F.col("_has_anon") == 1, F.array(F.lit("anonymous"))).otherwise(F.array().cast("array<string>")),
+            F.array_sort("_groups"),
         ),
     )
     .withColumn("profile_groups", F.when(F.size("_groups_all") > 0, F.concat_ws("+", "_groups_all")))
@@ -544,7 +544,7 @@ for g in ["apoyo", "mayor"]:
 treatment_expr = F.when(
     (_z("apoyo_m_in_6m_bef") == 0) & (_z("apoyo_m_in_18m_aft") == 0)
     & (_z("mayor_m_in_6m_bef") == 0) & (_z("mayor_m_in_18m_aft") == 0)
-    & (F.col("card_group") == "adulto"),
+    & (F.col("card_group") == "always_adulto"),
     F.lit("never"),
 ).otherwise(treatment_expr)
 

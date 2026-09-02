@@ -282,7 +282,7 @@ trip_cols = {
 # MAGIC ---
 # MAGIC ## 6. Profile group
 # MAGIC
-# MAGIC Groups the card profiles for analysis. `adultopv` and `frecuente` stay separate from `adulto` on purpose: they cannot serve as comparison cards. A NULL profile stays NULL.
+# MAGIC Groups the card profiles for analysis. `Adulto PV` (PV = personalización virtual) is an adulto card and maps to `adulto`; `frecuente` stays separate on purpose: it cannot serve as comparison cards. A NULL profile stays NULL.
 
 # COMMAND ----------
 
@@ -292,7 +292,7 @@ _profile_group_map = {
     "(001) Anonymous":                     "anonymous",
     "(002) Adulto Mayor":                  "mayor",
     "(006) Apoyo Ciudadano":               "apoyo",
-    "(101) Adulto PV":                     "adultopv",
+    "(101) Adulto PV":                     "adulto",
     "(014) Usuario frecuente":             "frecuente",
     "(004) Menor de Edad":                 "menor",
     "(003) Estudiantil":                   "estudiantil",
@@ -737,11 +737,11 @@ ax.legend(fontsize=9, ncol=2)
 plt.tight_layout()
 plt.show()
 
-# Size of adultopv and frecuente in the window (transactions and cards by month)
+# Size of frecuente in the window (transactions and cards by month)
 _check_pd = (
     df_t2_tbl
-    .filter(F.col("profile_group").isin("adultopv", "frecuente"))
-    .groupBy("ymonth", "profile_group")
+    .filter(F.col("profile_group") == "frecuente")
+    .groupBy("ymonth")
     .agg(
         F.count(F.lit(1)).alias("transactions"),
         F.countDistinct("cardnumber").alias("distinct_cards"),
@@ -752,14 +752,11 @@ _check_pd = (
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
 for ax, var, title in [(axes[0], "transactions", "Transactions"), (axes[1], "distinct_cards", "Distinct cards")]:
-    for group, color in [("adultopv", "steelblue"), ("frecuente", "indianred")]:
-        pdf = _check_pd[_check_pd["profile_group"] == group]
-        ax.plot(pdf["ymonth"], pdf[var], marker="o", linewidth=1.3, color=color, label=group)
+    ax.plot(_check_pd["ymonth"], _check_pd[var], marker="o", linewidth=1.3, color="indianred")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
     ax.tick_params(axis="x", rotation=45)
     ax.set_title(title, fontsize=12, fontweight="bold")
-    ax.legend(fontsize=9)
-plt.suptitle("Size of adultopv and frecuente in the window, by month", fontsize=13, fontweight="bold")
+plt.suptitle("Size of frecuente in the window, by month", fontsize=13, fontweight="bold")
 plt.tight_layout()
 plt.show()
 
