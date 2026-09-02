@@ -12,7 +12,7 @@
 # MAGIC
 # MAGIC 1. **Setup** — packages, catalog, parameters
 # MAGIC 2. **Read window table** — input checks
-# MAGIC 3. **Card classification** — one profile group per card (imputed profile), `ever_*` and `always_adulto` flags
+# MAGIC 3. **Card classification** — full profile-group history per card (imputed profile) and analysis group (`card_group`)
 # MAGIC 4. **Fare table** — modal fares by profile group × fare period
 # MAGIC 5. **Subsidized trips** — `apoyo_trip` / `mayor_trip` per transaction
 # MAGIC 6. **Monthly outcomes** — trips and subsidized months per card × month → `monthly_outcomes_2017`
@@ -70,8 +70,14 @@ FARE_PERIODS_M = [
     ("apr17-sep17", "2017-04", "2017-09"),
 ]
 
-# The three profile groups that define treatment and comparison cards
-TREATMENT_GROUPS = ["adulto", "apoyo", "mayor"]
+# Profile-group histories that qualify for each analysis group: comparison
+# adulto cards must be adulto in every transaction (never anonymous), while
+# treatment cards may have an anonymous stretch before registering
+ANALYSIS_GROUPS = {
+    "adulto": ["adulto"],
+    "apoyo":  ["apoyo", "apoyo+anonymous"],
+    "mayor":  ["mayor", "mayor+anonymous"],
+}
 
 # Modal fares are computed over each card's first trips of the month, up to this rank
 MAX_TRIPS_RANK = 30
@@ -127,19 +133,23 @@ dist_months_expr = F.months_between(
 # MAGIC ---
 # MAGIC ## 3. Card classification
 # MAGIC
-# MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous). 
+# MAGIC Classification runs on the imputed profile (everything up to a card's last anonymous transaction counts as anonymous).
 # MAGIC
-# MAGIC A card gets a group only if all its non-anonymous records belong to exactly ONE profile group. Cards mixing two or more non-anonymous groups get no group.
+# MAGIC `profile_groups` lists every profile group the card shows across the window, sorted with anonymous last (e.g. `apoyo+anonymous`).
 # MAGIC
-# MAGIC The comparison group is stricter: `always_adulto` marks cards that are adulto in EVERY transaction, with no anonymous records at all.
+# MAGIC `card_group` assigns the analysis group directly from that history: comparison `adulto` cards are adulto in EVERY transaction with no anonymous records, while treatment `apoyo`/`mayor` cards may have an anonymous stretch before registering. Any other history (mixed groups, anonymous-only, other profiles) gets no group.
 
 # COMMAND ----------
 
-# DBTITLE 1,One profile group per card + ever_* and always_adulto flags
+# DBTITLE 1,Profile-group history and analysis group per card
 _non_anon_group = F.when(
     F.col("profile_group_imputed").isNotNull() & (F.col("profile_group_imputed") != "anonymous"),
     F.col("profile_group_imputed"),
 )
+
+card_group_expr = F.lit(None).cast("string")
+for group, histories in ANALYSIS_GROUPS.items():
+    card_group_expr = F.when(F.col("profile_groups").isin(histories), F.lit(group)).otherwise(card_group_expr)
 
 df_cards_profile = (
     df_t2
@@ -147,38 +157,33 @@ df_cards_profile = (
     .groupBy("cardnumber")
     .agg(
         F.collect_set(_non_anon_group).alias("_groups"),
-        F.max((F.col("profile_group_imputed") == "anonymous").cast("int")).alias("has_anonymous"),
+        F.max((F.col("profile_group_imputed") == "anonymous").cast("int")).alias("_has_anon"),
     )
-    .withColumn("n_profile_groups", F.size("_groups"))
-    .withColumn("profile_groups", F.concat_ws("+", F.array_sort("_groups")))
-    .withColumn("card_group", F.when(F.col("n_profile_groups") == 1, F.element_at("_groups", 1)))
-    .withColumn("single_profile", (F.col("n_profile_groups") == 1).cast("int"))
-    .withColumn("ever_adulto", F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "adulto").cast("int")))
-    .withColumn("ever_apoyo",  F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "apoyo").cast("int")))
-    .withColumn("ever_mayor",  F.when(F.col("n_profile_groups") == 1, (F.col("card_group") == "mayor").cast("int")))
+    # Full history: all groups the card shows, sorted, anonymous last
     .withColumn(
-        "always_adulto",
-        F.when(F.col("n_profile_groups") == 1, ((F.col("card_group") == "adulto") & (F.col("has_anonymous") == 0)).cast("int")),
+        "_groups_all",
+        F.concat(
+            F.array_sort("_groups"),
+            F.when(F.col("_has_anon") == 1, F.array(F.lit("anonymous"))).otherwise(F.array().cast("array<string>")),
+        ),
     )
-    .drop("_groups")
+    .withColumn("profile_groups", F.when(F.size("_groups_all") > 0, F.concat_ws("+", "_groups_all")))
+    .withColumn("card_group", card_group_expr)
+    .drop("_groups", "_has_anon", "_groups_all")
 )
 
-print("── Cards by classification outcome ──")
-display(
-    df_cards_profile.agg(
-        F.count(F.lit(1)).alias("cards"),
-        F.sum("single_profile").alias("single_group"),
-        F.sum("always_adulto").alias("always_adulto"),
-        F.sum(F.when(F.col("n_profile_groups") > 1, 1).otherwise(0)).alias("mixed_groups"),
-        F.sum(F.when((F.col("n_profile_groups") == 0) & (F.col("has_anonymous") == 1), 1).otherwise(0)).alias("anonymous_only"),
-        F.sum(F.when((F.col("n_profile_groups") == 0) & (F.col("has_anonymous") == 0), 1).otherwise(0)).alias("no_profile_at_all"),
-    )
-)
-
-print("── Most common profile-group combinations ──")
+print("── Cards per analysis group (null = not classified) ──")
 display(
     df_cards_profile
-    .groupBy("profile_groups", "has_anonymous")
+    .groupBy("card_group")
+    .count()
+    .orderBy(F.col("count").desc())
+)
+
+print("── Most common profile-group histories ──")
+display(
+    df_cards_profile
+    .groupBy("profile_groups", "card_group")
     .count()
     .orderBy(F.col("count").desc())
     .limit(25)
@@ -206,7 +211,7 @@ df_ranked_trips = (
     df_t2
     .join(df_cards_profile.select("cardnumber", "card_group"), "cardnumber")
     .filter(
-        F.col("card_group").isin(*TREATMENT_GROUPS)
+        F.col("card_group").isNotNull()
         & (F.col("trip") == 1)
         & F.col("fecha_transaccion_timestamp").isNotNull()
     )
@@ -269,15 +274,15 @@ def _fare_match_expr(group):
     return match
 
 df_tx = df_t2.join(
-    df_cards_profile.select("cardnumber", "card_group", "ever_adulto", "ever_apoyo", "ever_mayor"),
+    df_cards_profile.select("cardnumber", "card_group"),
     "cardnumber", "left",
 )
 
 _pretab_pd = {}
-for group, ever_col in [("apoyo", "ever_apoyo"), ("mayor", "ever_mayor")]:
+for group in ["apoyo", "mayor"]:
     _pretab_pd[group] = (
         df_tx
-        .filter((F.col(ever_col) == 1) & (F.col("trip") == 1))
+        .filter((F.col("card_group") == group) & (F.col("trip") == 1))
         .groupBy("ymonth")
         .agg(
             F.countDistinct("cardnumber").alias("cards_total"),
@@ -310,7 +315,7 @@ plt.show()
 # this shows its exact start and end dates.
 glitch_daily_pd = (
     df_tx
-    .filter((F.col("ever_apoyo") == 1) & (F.col("trip") == 1) & F.col("fecha_transaccion").isNotNull())
+    .filter((F.col("card_group") == "apoyo") & (F.col("trip") == 1) & F.col("fecha_transaccion").isNotNull())
     .groupBy("fecha_transaccion")
     .agg(
         F.countDistinct("cardnumber").alias("cards_total"),
@@ -363,9 +368,9 @@ plt.show()
 # apoyo_trip is missing in the glitch month (the subsidy was wrongly given to
 # every apoyo holder, so that month says nothing about true eligibility).
 apoyo_trip_expr = F.when(F.col("ymonth") == GLITCH_MONTH, F.lit(None).cast("int")).otherwise(
-    ((F.col("ever_apoyo") == 1) & _fare_match_expr("apoyo")).cast("int")
+    ((F.col("card_group") == "apoyo") & _fare_match_expr("apoyo")).cast("int")
 )
-mayor_trip_expr = ((F.col("ever_mayor") == 1) & _fare_match_expr("mayor")).cast("int")
+mayor_trip_expr = ((F.col("card_group") == "mayor") & _fare_match_expr("mayor")).cast("int")
 
 df_tx = (
     df_tx
@@ -524,22 +529,22 @@ df_cards_tags = (
 
 # DBTITLE 1,Treatment group and write T4
 # kept = subsidized before and after | lost = only before | gain = only after.
-# never = an always-adulto card (adulto in every transaction, never anonymous)
-# with no subsidized month at all (the comparison group).
+# never = a comparison adulto card (adulto in every transaction, never
+# anonymous) with no subsidized month at all.
 _z = lambda c: F.coalesce(F.col(c), F.lit(0))
 
 treatment_expr = F.lit(None).cast("string")
 for g in ["apoyo", "mayor"]:
     treatment_expr = (
-        F.when((_z(f"{g}_m_in_6m_bef") >= MIN_SUB_MONTHS) & (_z(f"{g}_m_in_18m_aft") >= MIN_SUB_MONTHS) & (F.col(f"ever_{g}") == 1), F.lit(f"{g}_kept"))
-        .when((_z(f"{g}_m_in_6m_bef") >= MIN_SUB_MONTHS) & (_z(f"{g}_m_in_18m_aft") == 0) & (F.col(f"ever_{g}") == 1), F.lit(f"{g}_lost"))
-        .when((_z(f"{g}_m_in_6m_bef") == 0) & (_z(f"{g}_m_in_18m_aft") >= MIN_SUB_MONTHS) & (F.col(f"ever_{g}") == 1), F.lit(f"{g}_gain"))
+        F.when((_z(f"{g}_m_in_6m_bef") >= MIN_SUB_MONTHS) & (_z(f"{g}_m_in_18m_aft") >= MIN_SUB_MONTHS) & (F.col("card_group") == g), F.lit(f"{g}_kept"))
+        .when((_z(f"{g}_m_in_6m_bef") >= MIN_SUB_MONTHS) & (_z(f"{g}_m_in_18m_aft") == 0) & (F.col("card_group") == g), F.lit(f"{g}_lost"))
+        .when((_z(f"{g}_m_in_6m_bef") == 0) & (_z(f"{g}_m_in_18m_aft") >= MIN_SUB_MONTHS) & (F.col("card_group") == g), F.lit(f"{g}_gain"))
         .otherwise(treatment_expr)
     )
 treatment_expr = F.when(
     (_z("apoyo_m_in_6m_bef") == 0) & (_z("apoyo_m_in_18m_aft") == 0)
     & (_z("mayor_m_in_6m_bef") == 0) & (_z("mayor_m_in_18m_aft") == 0)
-    & (F.col("always_adulto") == 1),
+    & (F.col("card_group") == "adulto"),
     F.lit("never"),
 ).otherwise(treatment_expr)
 
@@ -580,7 +585,9 @@ display(
 # MAGIC ---
 # MAGIC ## 8. Balanced panel → `panel_2017`
 # MAGIC
-# MAGIC The analysis sample: cards present before and after the reform, assigned to one of the three selected treatment groups (`never`, `apoyo_kept`, `apoyo_lost`). No filters on superswipers, infrequent users, or single-profile status. Each of them gets one row per window month; months without transactions are coded as zero trips. Card-level variables are NOT here — they live in `cards_2017` and merge at analysis time.
+# MAGIC The analysis sample: cards present before and after the reform, assigned to one of the three selected treatment groups (`never`, `apoyo_kept`, `apoyo_lost`), and not tagged as superswipers.
+# MAGIC
+# MAGIC Infrequent users (fewer than 12 active days in the window) STAY in the panel: excluding them from the three groups is a robustness check at analysis time, merging `tag_infrequent` from `cards_2017`. Each card gets one row per window month; months without transactions are coded as zero trips. Card-level variables are NOT here — they live in `cards_2017` and merge at analysis time.
 
 # COMMAND ----------
 
@@ -623,6 +630,8 @@ _diag = (
         F.sum(F.when(F.coalesce(F.col("n_impossible_fare"), F.lit(0)) > 0, 1).otherwise(0)).alias("any_impossible_fare"),
         F.sum(F.when(F.coalesce(F.col("n_early_zero"), F.lit(0)) > 0, 1).otherwise(0)).alias("any_early_zero"),
         F.round(F.avg(F.coalesce(F.col("n_days_active"), F.lit(0))), 1).alias("avg_days_active"),
+        F.round(F.avg(F.when(F.coalesce(F.col("tag_infrequent"), F.lit(0)) == 0, F.col("n_days_active"))), 1).alias("avg_days_active_freq"),
+        F.round(F.avg(F.when(F.col("tag_infrequent") == 1, F.col("n_days_active"))), 1).alias("avg_days_active_infreq"),
     )
     .withColumn("pct_infrequent",         F.round(100 * F.col("infrequent")         / F.col("cards"), 2))
     .withColumn("pct_superswiper",        F.round(100 * F.col("superswiper")        / F.col("cards"), 2))
@@ -640,12 +649,78 @@ display(_diag)
 
 # COMMAND ----------
 
+# DBTITLE 1,Check: days traveling per card, by treatment group
+# Many never (always-adulto) cards are tagged infrequent. Distribution of
+# distinct active days per card with the 12-day threshold marked: a mass just
+# below 12 suggests near-threshold regular users; a mass at 2-3 days suggests
+# true occasional travelers.
+_days_pd = (
+    _base
+    .withColumn("n_days_active", F.coalesce(F.col("n_days_active"), F.lit(0)))
+    .groupBy("treatment", "n_days_active")
+    .count()
+    .toPandas()
+)
+
+fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+for ax, t in zip(axes, ["never", "apoyo_kept", "apoyo_lost"]):
+    pdf = _days_pd[_days_pd["treatment"] == t].sort_values("n_days_active")
+    ax.bar(pdf["n_days_active"], pdf["count"], width=1.0, color="steelblue")
+    ax.axvline(11.5, color="red", linewidth=1.2, linestyle="--", label="Infrequent threshold (<12 days)")
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Distinct days with transactions in the window", fontsize=10)
+    ax.set_ylabel("Cards", fontsize=10)
+    ax.set_title(t, fontsize=12, fontweight="bold")
+    ax.legend(fontsize=8)
+plt.suptitle("Days traveling per card, by treatment group (x-axis capped at 100 days)", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Check: first active month of infrequent vs frequent cards
+# If infrequent cards cluster on a first active month just before the reform,
+# they are late entrants around the policy change rather than long-standing
+# occasional travelers. Presence in the 6 months before the reform is already
+# required, so first_active_month can only fall in the pre-reform half.
+_first_pd = (
+    _base
+    .withColumn("infrequent", F.coalesce(F.col("tag_infrequent"), F.lit(0)))
+    .groupBy("treatment", "infrequent", "first_active_month")
+    .count()
+    .toPandas()
+)
+
+fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
+for ax, t in zip(axes, ["never", "apoyo_kept", "apoyo_lost"]):
+    for infreq, color, label in [(0, "dimgray", "Frequent"), (1, "indianred", "Infrequent")]:
+        counts = (
+            _first_pd[(_first_pd["treatment"] == t) & (_first_pd["infrequent"] == infreq)]
+            .set_index("first_active_month")["count"]
+            .reindex(WINDOW_MONTHS)
+            .fillna(0)
+        )
+        n_cards = counts.sum()
+        ax.plot(WINDOW_MONTHS, 100 * counts / max(n_cards, 1), marker="o", markersize=3, color=color, linewidth=1.3,
+                label=f"{label} ({int(n_cards):,} cards)")
+    ax.axvline(REFORM_MONTH, color="red", linewidth=1.2, linestyle="--")
+    ax.tick_params(axis="x", rotation=45)
+    ax.set_ylabel("% of the group's cards", fontsize=10)
+    ax.set_title(t, fontsize=12, fontweight="bold")
+    ax.legend(fontsize=8)
+plt.suptitle("First active month: infrequent vs frequent cards (red line = reform)", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
 # DBTITLE 1,Build and write T5
 df_sample_cards = (
     spark.table(T4_TABLE)
     .filter(
         (F.col("in_6m_bef") == 1)
         & (F.col("in_6m_aft") == 1)
+        & (F.coalesce(F.col("tag_superswiper"), F.lit(0)) == 0)
         & F.col("treatment").isin("never", "apoyo_kept", "apoyo_lost")
     )
     .select("cardnumber")
@@ -729,7 +804,7 @@ plt.show()
 # month is visible instead of missing.
 share_pd = (
     df_tx
-    .filter((F.col("ever_apoyo") == 1) & (F.col("trip") == 1))
+    .filter((F.col("card_group") == "apoyo") & (F.col("trip") == 1))
     .groupBy("ymonth")
     .agg((100 * F.avg(_fare_match_expr("apoyo").cast("int"))).alias("pct_sub"))
     .orderBy("ymonth")
@@ -756,13 +831,15 @@ df_t4_tbl = spark.table(T4_TABLE)
 
 _f1 = df_t4_tbl
 _f2 = _f1.filter((F.col("in_6m_bef") == 1) & (F.col("in_6m_aft") == 1))
-_f_never      = _f2.filter(F.col("treatment") == "never")
-_f_apoyo_kept = _f2.filter(F.col("treatment") == "apoyo_kept")
-_f_apoyo_lost = _f2.filter(F.col("treatment") == "apoyo_lost")
+_f3 = _f2.filter(F.coalesce(F.col("tag_superswiper"), F.lit(0)) == 0)
+_f_never      = _f3.filter(F.col("treatment") == "never")
+_f_apoyo_kept = _f3.filter(F.col("treatment") == "apoyo_kept")
+_f_apoyo_lost = _f3.filter(F.col("treatment") == "apoyo_lost")
 
 funnel = [
     ("All cards\nin window",        _f1.count()),
     ("Present before\nand after",   _f2.count()),
+    ("Not a\nsuperswiper",          _f3.count()),
     ("never",                        _f_never.count()),
     ("apoyo_kept",                   _f_apoyo_kept.count()),
     ("apoyo_lost",                   _f_apoyo_lost.count()),
@@ -771,7 +848,7 @@ funnel = [
 fig, ax = plt.subplots(figsize=(11, 5.5))
 _labels = [s[0] for s in funnel]
 _vals   = [s[1] for s in funnel]
-colors  = ["dimgray", "steelblue", "seagreen", "indianred", "indianred"]
+colors  = ["dimgray", "steelblue", "steelblue", "seagreen", "indianred", "indianred"]
 bars = ax.bar(_labels, _vals, color=colors)
 for i, (b, v) in enumerate(zip(bars, _vals)):
     txt = f"{v:,}"
@@ -789,7 +866,7 @@ plt.show()
 
 # DBTITLE 1,Figure 4: cards per treatment group
 treat_pd = (
-    _f5.groupBy("treatment").count().toPandas()
+    _f3.groupBy("treatment").count().toPandas()
     .set_index("treatment")
     .reindex(["apoyo_kept", "apoyo_lost", "apoyo_gain", "mayor_kept", "mayor_lost", "mayor_gain", "never"])
     .fillna(0)
