@@ -11,12 +11,16 @@
 # MAGIC
 # MAGIC `treatment` is exported as stable numeric codes defined explicitly below, so the codes never change across re-runs (new values are only ever added, existing codes never reassigned). The `label define treatment` line in `import_2017.do` must match this map — the check in Section 2 prints the expected line. Each card gets a sequential integer `card_id` (the panel key in Stata); the original `cardnumber` is kept only in the cards file, as a string, for the Sisbén crosswalk merge.
 # MAGIC
+# MAGIC The price inputs for the elasticities travel in two more files: `fares_2017.csv` (the fare table of the sample, as is) and `prices_2017.csv` (one row per sample card, keyed by `card_id`, with the pre-reform basket and prices per window).
+# MAGIC
 # MAGIC 1. **Setup** — packages, catalog, parameters, code maps
 # MAGIC 2. **Read tables** — input checks
 # MAGIC 3. **Card ids** — sequential `card_id` per card
 # MAGIC 4. **Cards export** — `cards_2017.csv`
 # MAGIC 5. **Panel export** — `panel_2017.csv`
-# MAGIC 6. **Checks** — re-read the CSVs and compare against the tables
+# MAGIC 6. **Fares export** — `fares_2017.csv`
+# MAGIC 7. **Prices export** — `prices_2017.csv`
+# MAGIC 8. **Checks** — re-read the CSVs and compare against the tables
 
 # COMMAND ----------
 
@@ -45,6 +49,8 @@ from pyspark.sql import Window
 # Input tables
 T4_TABLE = "prd_mega.scolom15.cards_2017"
 T5_TABLE = "prd_mega.scolom15.panel_2017"
+FARES_TABLE  = "prd_mega.scolom15.fares_2017"
+PRICES_TABLE = "prd_mega.scolom15.prices_2017"
 
 # Output folder on the volume
 EXPORT_DIR = "/Volumes/prd_csc_mega/sColom15/vColom15/Workspace/Construct/export_2017/"
@@ -94,10 +100,17 @@ def write_single_csv(df, filename):
 df_t4 = spark.table(T4_TABLE)
 df_t5 = spark.table(T5_TABLE)
 
+df_fares  = spark.table(FARES_TABLE)
+df_prices = spark.table(PRICES_TABLE)
+
 n_t4 = df_t4.count()
 n_t5 = df_t5.count()
+n_fares  = df_fares.count()
+n_prices = df_prices.count()
 print(f"{T4_TABLE}: {n_t4:,} cards")
 print(f"{T5_TABLE}: {n_t5:,} card-months")
+print(f"{FARES_TABLE}: {n_fares:,} fares")
+print(f"{PRICES_TABLE}: {n_prices:,} cards")
 
 # Every treatment value in the data must have a code in the map
 unmapped = (
@@ -192,10 +205,55 @@ write_single_csv(df_panel_out, "panel_2017.csv")
 
 # COMMAND ----------
 
-# DBTITLE 1,Section 6: Checks
+# DBTITLE 1,Section 6: Fares export
 # MAGIC %md
 # MAGIC ---
-# MAGIC ## 6. Checks
+# MAGIC ## 6. Fares export → `fares_2017.csv`
+# MAGIC
+# MAGIC The fare table of the sample as built in `prices-calcs.py`: one row per analysis group × fare period × fare type (`zonal`, `troncal`, `tr_zz`, `tr_zt`, `tr_tz`, `tr_tt`), with the modal fare, its frequency and its share. Small and fully labeled, so the strings stay as they are.
+
+# COMMAND ----------
+
+# DBTITLE 1,Write fares CSV
+df_fares_out = df_fares.select("card_group", "fare_period", "fare_type", "fare", "freq", "share").orderBy("card_group", "fare_period", "fare_type")
+write_single_csv(df_fares_out, "fares_2017.csv")
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 7: Prices export
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 7. Prices export → `prices_2017.csv`
+# MAGIC
+# MAGIC One row per sample card keyed by `card_id`: the pre-reform basket per window (trips by type, transfers by type, amounts paid), the price paid per trip (`p_pre_*`), the price of the same basket at post-reform fares (`p_post_cf_*`) and the observed post price (`p_post_obs`). Treatment, group and the post fares are dropped: treatment merges from the cards file, and the fares are in `fares_2017.csv`.
+
+# COMMAND ----------
+
+# DBTITLE 1,Build and write prices CSV
+_drop_cols = ["cardnumber", "card_group", "treatment", "fare_group_post"] + [c for c in df_prices.columns if c.startswith("fare_post_")]
+
+df_prices_out = (
+    df_prices
+    .join(df_ids, "cardnumber")
+    .drop(*_drop_cols)
+)
+prices_cols = ["card_id"] + [c for c in df_prices_out.columns if c != "card_id"]
+df_prices_out = df_prices_out.select(prices_cols)
+
+n_prices_out = df_prices_out.count()
+if n_prices_out == n_prices:
+    print(f"✅ Prices keep all {n_prices:,} cards after the card_id join.")
+else:
+    print(f"⚠️  Prices rows changed after the card_id join: {n_prices:,} → {n_prices_out:,}")
+
+write_single_csv(df_prices_out, "prices_2017.csv")
+
+# COMMAND ----------
+
+# DBTITLE 1,Section 8: Checks
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## 8. Checks
 
 # COMMAND ----------
 
@@ -224,3 +282,22 @@ else:
 
 print("── Cards by treatment code (label = code map) ──")
 display(chk_cards.groupBy("treatment").count().orderBy("treatment"))
+
+# Fares and prices CSVs
+chk_fares  = spark.read.option("header", True).csv(EXPORT_DIR + "fares_2017.csv")
+chk_prices = spark.read.option("header", True).csv(EXPORT_DIR + "prices_2017.csv")
+
+n_chk_fares  = chk_fares.count()
+n_chk_prices = chk_prices.count()
+print(f"fares_2017.csv: {n_chk_fares:,} rows {'✅' if n_chk_fares == n_fares else f'⚠️ table has {n_fares:,}'}")
+print(f"prices_2017.csv: {n_chk_prices:,} rows {'✅' if n_chk_prices == n_prices else f'⚠️ table has {n_prices:,}'}")
+
+# The prices file must cover exactly the panel's cards
+n_prices_in_panel = chk_prices.select("card_id").join(chk_panel.select("card_id").distinct(), "card_id").count()
+if n_chk_prices == n_ids_panel and n_prices_in_panel == n_ids_panel:
+    print(f"✅ prices_2017.csv has one row for each of the panel's {n_ids_panel:,} cards.")
+else:
+    print(f"⚠️  prices_2017.csv: {n_chk_prices:,} rows, {n_prices_in_panel:,} matching panel cards; the panel has {n_ids_panel:,}.")
+
+print("── Fare table ──")
+display(chk_fares.orderBy("card_group", "fare_period", "fare_type"))
