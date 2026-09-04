@@ -149,7 +149,7 @@ df_ids = df_t4.select("cardnumber").withColumn(
 # MAGIC ---
 # MAGIC ## 4. Cards export → `cards_2017.csv`
 # MAGIC
-# MAGIC ALL cards in the window. `in_sample` marks membership in `panel_2017` itself (not a re-application of the sample filter, so it can never drift from the actual panel); the columns behind the filter — presence flags, `tag_superswiper`, `treatment` — ride along so *why* a card is out is visible in Stata, plus `tag_infrequent` (the robustness flag), the apoyo subsidized-month counts and the pre/post spending totals. `cardnumber` is a string column (long ids lose precision as doubles), kept for the Sisbén crosswalk merge.
+# MAGIC ALL cards in the window. `in_sample` marks membership in `panel_2017` itself (not a re-application of the sample filter, so it can never drift from the actual panel); the columns behind the filter — presence flags, `tag_superswiper`, `treatment` — ride along so *why* a card is out is visible in Stata, plus `tag_infrequent` (the robustness flag), the apoyo subsidized-month counts, the pre/post spending totals and `first_active_month` (first month with any transaction in the window, so the analysis can set the panel's zero-filled months before it to missing as a robustness check). `cardnumber` is a string column (long ids lose precision as doubles), kept for the Sisbén crosswalk merge.
 
 # COMMAND ----------
 
@@ -170,6 +170,7 @@ df_cards_out = (
         "in_6m_bef", "in_6m_aft",
         "apoyo_m_in_6m_bef", "apoyo_m_in_6m_aft",
         "tot_value_no_tr_6bef", "tot_value_no_tr_6aft",
+        "first_active_month",
     )
 )
 
