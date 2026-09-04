@@ -216,7 +216,7 @@ write_single_csv(df_panel_out, "panel_2017.csv")
 # COMMAND ----------
 
 # DBTITLE 1,Write fares CSV
-df_fares_out = df_fares.select("card_group", "fare_period", "fare_type", "fare", "freq", "share").orderBy("card_group", "fare_period", "fare_type")
+df_fares_out = df_fares.select("card_group", "fare_period", "fare_type", "fare", "freq", "pct_at_fare").orderBy("card_group", "fare_period", "fare_type")
 write_single_csv(df_fares_out, "fares_2017.csv")
 
 # COMMAND ----------

@@ -276,7 +276,8 @@ display(
 # MAGIC ---
 # MAGIC ## 4. Fare table → `fares_2017`
 # MAGIC
-# MAGIC For trips, the two most frequent values by analysis group and fare period are the zonal (lower) and troncal (higher) fares, computed over each card's first 30 trips of the month so heavy travelers do not dominate the mode. For transfers, the most frequent value by group, period and transfer type. The full value distribution of transfers is displayed first: it is the check of the transfer pricing rule (300 before; after, 200 for zonal → troncal and 0 otherwise).
+# MAGIC For trips, the two most frequent values by analysis group and fare period are the zonal (lower) and troncal (higher) fares, computed over each card's first 30 trips of the month so heavy travelers do not dominate the mode.
+# MAGIC For transfers, the most frequent value by group, period and transfer type. The full value distribution of transfers is displayed first: it is the check of the transfer pricing rule (300 before; after, 200 for zonal → troncal and 0 otherwise).
 
 # COMMAND ----------
 
@@ -350,6 +351,8 @@ transfer_fares_pd = (
 fares_pd = (
     pd.concat([trip_fares_pd, transfer_fares_pd], ignore_index=True)
     .astype({"fare": "float64", "freq": "int64", "share": "float64"})
+    .assign(share=lambda d: d["share"].mul(100).round(1))
+    .rename(columns={"share": "pct_at_fare"})
     .sort_values(["card_group", "fare_period", "fare_type"])
     .reset_index(drop=True)
 )
@@ -371,7 +374,7 @@ for g in _groups:
             base = fares_pd[(fares_pd["card_group"] == g) & (fares_pd["fare_period"] == p) & (fares_pd["fare_type"] == f"tr_{UNKNOWN_TRANSFER_AS}")]
             fares_pd = pd.concat([fares_pd, pd.DataFrame([{
                 "card_group": g, "fare_period": p, "fare_type": t,
-                "fare": float(base["fare"].iloc[0]), "freq": 0, "share": np.nan,
+                "fare": float(base["fare"].iloc[0]), "freq": 0, "pct_at_fare": np.nan,
             }])], ignore_index=True)
             _filled.append((g, p, t))
 if _filled:
@@ -379,8 +382,12 @@ if _filled:
 else:
     print("✅ Every group × period has a fare for every type.")
 
-fares_pd = fares_pd.sort_values(["card_group", "fare_period", "fare_type"]).reset_index(drop=True)
-print("── Fare table ──")
+_period_order = {p[0]: i for i, p in enumerate(FARE_PERIODS_M)}
+fares_pd = fares_pd.sort_values(
+    ["fare_type", "card_group", "fare_period"],
+    key=lambda col: col.map(_period_order) if col.name == "fare_period" else col,
+).reset_index(drop=True)
+print("── Fare table (pct_at_fare = % of transactions in the group × period × type paying exactly that fare) ──")
 display(fares_pd)
 
 (
@@ -465,7 +472,14 @@ else:
 # MAGIC ---
 # MAGIC ## 6. Prices per card → `prices_2017`
 # MAGIC
-# MAGIC For each pre-reform window (6 months and 3 months before the reform): the card's basket over the window, the price paid per trip (`p_pre` = total paid, transfers included, over trips), and the price the same basket would cost at post-reform fares (`p_post_cf`), using the fares of the group the card pays after the reform: apoyo fares for `apoyo_kept`, adulto fares for `apoyo_lost` and `never`. Unknown transfers are priced at the base transfer fare. The observed price paid after the reform (`p_post_obs`, months 0–5 without the glitch month) is a diagnostic: its gap with `p_post_cf` is the change in the basket itself.
+# MAGIC For each pre-reform window (6 months and 3 months before the reform): 
+# MAGIC * the card's basket over the window
+# MAGIC * the price paid per trip (`p_pre` = total paid, transfers included, over trips)
+# MAGIC * the price the same basket would cost at post-reform fares (`p_post_cf`), using the fares of the group the card pays after the reform: 
+# MAGIC     * apoyo fares for `apoyo_kept`, 
+# MAGIC     * adulto fares for `apoyo_lost` and `never`.
+# MAGIC     * Unknown transfers are priced at $0
+# MAGIC     * The observed price paid after the reform (`p_post_obs`, months 0–5 without the glitch month) is a diagnostic: its gap with `p_post_cf` is the change in the basket itself.
 
 # COMMAND ----------
 
@@ -572,15 +586,16 @@ display(
 )
 
 # Basket composition by treatment, 6-month window: shares of zonal trips and transfers per trip
-print("── Basket composition in the 6 months before the reform, by treatment ──")
+print("── Basket composition in the 6 months before the reform, by treatment (% of total validations) ──")
 display(
     df_prices_tbl
+    .withColumn("n_tx_pre_6m", F.col("n_trips_pre_6m") + F.col("n_transfers_pre_6m"))
     .groupBy("treatment")
     .agg(
-        F.round(F.sum("n_zonal_pre_6m") / F.sum("n_trips_pre_6m"), 3).alias("share_zonal"),
-        F.round(F.sum("n_transfers_pre_6m") / F.sum("n_trips_pre_6m"), 3).alias("transfers_per_trip"),
-        F.round(F.sum("n_tr_zt_pre_6m") / F.sum("n_trips_pre_6m"), 3).alias("tr_zt_per_trip"),
-        F.round(F.sum("n_tr_unknown_pre_6m") / F.sum("n_transfers_pre_6m"), 3).alias("share_unknown_among_transfers"),
+        F.round(100 * F.sum("n_zonal_pre_6m") / F.sum("n_tx_pre_6m"), 1).alias("pct_zonal"),
+        F.round(100 * F.sum("n_troncal_pre_6m") / F.sum("n_tx_pre_6m"), 1).alias("pct_troncal"),
+        F.round(100 * F.sum("n_transfers_pre_6m") / F.sum("n_tx_pre_6m"), 1).alias("pct_transfers"),
+        F.round(100 * F.sum("n_tr_zt_pre_6m") / F.sum("n_tx_pre_6m"), 1).alias("pct_tr_zt"),
     )
     .orderBy("treatment")
 )
@@ -600,23 +615,26 @@ display(
 
 # DBTITLE 1,Figure 1: fare table
 _ft = fares_pd.copy()
-_ft["label"] = _ft["card_group"] + "\n" + _ft["fare_period"]
-_labels = sorted(_ft["label"].unique())
+_period_order = {p[0]: i for i, p in enumerate(FARE_PERIODS_M)}
+_periods = sorted(_ft["fare_period"].unique(), key=lambda p: _period_order.get(p, 0))
+_groups = sorted(_ft["card_group"].unique())
 
-fig, axes = plt.subplots(1, 2, figsize=(15, 5.5))
+fig, axes = plt.subplots(2, 1, figsize=(14, 10))
 for ax, types, title in [
     (axes[0], ["zonal", "troncal"], "Trip fares"),
     (axes[1], [f"tr_{t}" for t in TRANSFER_TYPES], "Transfer fares (origin → destination leg)"),
 ]:
-    x = np.arange(len(_labels))
-    w = 0.8 / len(types)
-    for i, t in enumerate(types):
-        vals = [_ft[(_ft["label"] == l) & (_ft["fare_type"] == t)]["fare"].iloc[0] for l in _labels]
-        bars = ax.bar(x + (i - (len(types) - 1) / 2) * w, vals, width=w, label=t)
+    x_labels = [f"{g}\n{t}" for g in _groups for t in types]
+    x = np.arange(len(x_labels))
+    w = 0.8 / len(_periods)
+    for i, p in enumerate(_periods):
+        vals = [_ft[(_ft["card_group"] == g) & (_ft["fare_period"] == p) & (_ft["fare_type"] == t)]["fare"].iloc[0]
+                for g in _groups for t in types]
+        bars = ax.bar(x + (i - (len(_periods) - 1) / 2) * w, vals, width=w, label=p)
         for b, v in zip(bars, vals):
             ax.text(b.get_x() + b.get_width() / 2, v, f"${int(v)}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x)
-    ax.set_xticklabels(_labels, fontsize=9)
+    ax.set_xticklabels(x_labels, fontsize=9)
     ax.set_ylabel("Fare (COP)", fontsize=11)
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.legend(fontsize=9)
@@ -627,6 +645,8 @@ plt.show()
 # COMMAND ----------
 
 # DBTITLE 1,Figure 2: basket composition by month and treatment group
+import matplotlib.ticker as mticker
+
 _comp_pd = (
     spark.table(BASKET_TABLE)
     .join(df_sample_cards.select("cardnumber", "treatment"), "cardnumber")
@@ -642,20 +662,23 @@ _comp_pd = (
 )
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex=True)
-for ax, col, title in [
-    (axes[0, 0], "share_zonal",        "Share of zonal trips"),
-    (axes[0, 1], "transfers_per_trip", "Transfers per trip"),
-    (axes[1, 0], "tr_zt_per_trip",     "Zonal → troncal transfers per trip"),
-    (axes[1, 1], "paid_per_trip",      "Amount paid per trip (COP, transfers included)"),
+for ax, col, title, as_pct in [
+    (axes[0, 0], "share_zonal",        "Share of zonal trips", True),
+    (axes[0, 1], "transfers_per_trip", "Transfers per trip", True),
+    (axes[1, 0], "tr_zt_per_trip",     "Zonal → troncal transfers per trip", True),
+    (axes[1, 1], "paid_per_trip",      "Amount paid per trip (COP, transfers included)", False),
 ]:
     piv = _comp_pd.pivot(index="ymonth", columns="treatment", values=col).reindex(WINDOW_MONTHS)
     for t in SAMPLE_TREATMENTS:
         if t in piv.columns:
             ax.plot(piv.index, piv[t], "--" if t == "never" else "-", marker="o", markersize=3, linewidth=1.4, label=t)
-    ax.axvline(REFORM_MONTH, color="red", linewidth=1.2, linestyle="--")
+    ax.axvline(str(pd.Period(REFORM_MONTH, freq="M") - 1), color="red", linewidth=1.2, linestyle="--")
     ax.axvline(GLITCH_MONTH, color="orange", linewidth=1.0, linestyle=":")
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.tick_params(axis="x", rotation=45)
+    ax.set_ylim(bottom=0)
+    if as_pct:
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0, decimals=0))
     ax.legend(fontsize=8)
 plt.suptitle("Basket composition by month and treatment group (red = reform, orange = glitch month)", fontsize=13, fontweight="bold")
 plt.tight_layout()
@@ -678,18 +701,86 @@ _price_pd = (
     .reindex(SAMPLE_TREATMENTS)
 )
 
-fig, ax = plt.subplots(figsize=(12, 5.5))
-x = np.arange(len(SAMPLE_TREATMENTS))
-w = 0.8 / len(_price_cols)
-for i, c in enumerate(_price_cols):
-    bars = ax.bar(x + (i - (len(_price_cols) - 1) / 2) * w, _price_pd[c], width=w, label=c)
-    for b, v in zip(bars, _price_pd[c]):
-        if pd.notna(v):
-            ax.text(b.get_x() + b.get_width() / 2, v, f"{v:,.0f}", ha="center", va="bottom", fontsize=7)
-ax.set_xticks(x)
-ax.set_xticklabels(SAMPLE_TREATMENTS, fontsize=11)
-ax.set_ylabel("COP per trip (mean over cards)", fontsize=11)
-ax.set_title("Price per trip by treatment group: paid before, same basket at post fares, observed after", fontsize=13, fontweight="bold")
-ax.legend(fontsize=9, ncol=3)
+# Average of zonal + troncal fares per treatment for reference
+_avg_fares = (
+    fares_pd[fares_pd["fare_type"].isin(["zonal", "troncal"])]
+    .groupby(["card_group", "fare_period"])["fare"]
+    .mean()
+)
+_pre_fg = {"never": "always_adulto", "apoyo_kept": "apoyo", "apoyo_lost": "apoyo"}
+_price_pd["avg_fare_pre"] = [_avg_fares[(_pre_fg[t], PRE_PERIOD)] for t in SAMPLE_TREATMENTS]
+_price_pd["avg_fare_post"] = [_avg_fares[(POST_FARE_GROUP[t], POST_PERIOD)] for t in SAMPLE_TREATMENTS]
+
+fig, axes = plt.subplots(len(PRICE_WINDOWS), 1, figsize=(11, 7))
+if len(PRICE_WINDOWS) == 1:
+    axes = [axes]
+for ax, label in zip(axes, PRICE_WINDOWS):
+    series = [
+        (f"p_pre_{label}",     "Pre (observed)",       "tab:blue",     None),
+        ("avg_fare_pre",        "Avg fare (pre)",       "lightskyblue", "//"),
+        (f"p_post_cf_{label}", "Post (counterfactual)", "tab:orange",   None),
+        ("avg_fare_post",       "Avg fare (post)",      "navajowhite",  "//"),
+        ("p_post_obs",         "Post (observed)",       "grey",         None),
+    ]
+    x = np.arange(len(SAMPLE_TREATMENTS))
+    w = 0.8 / len(series)
+    for i, (c, lbl, color, hatch) in enumerate(series):
+        bars = ax.bar(x + (i - (len(series) - 1) / 2) * w, _price_pd[c], width=w, label=lbl, color=color, hatch=hatch)
+        for b, v in zip(bars, _price_pd[c]):
+            if pd.notna(v):
+                ax.text(b.get_x() + b.get_width() / 2, v, f"{v:,.0f}", ha="center", va="bottom", fontsize=7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(SAMPLE_TREATMENTS, fontsize=11)
+    ax.set_ylabel("COP per trip (mean over cards)", fontsize=11)
+    ax.set_title(f"Window: {label} before reform", fontsize=12, fontweight="bold")
+    ax.legend(fontsize=9)
+plt.suptitle("Price per trip by treatment group: paid before, same basket at post fares, observed after", fontsize=13, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+# COMMAND ----------
+
+# DBTITLE 1,Figure 4: % change in price per trip by measure
+fig, axes = plt.subplots(len(PRICE_WINDOWS), 1, figsize=(11, 5.5))
+if len(PRICE_WINDOWS) == 1:
+    axes = [axes]
+for ax, label in zip(axes, PRICE_WINDOWS):
+    pct_avg = (
+        (_price_pd["avg_fare_post"] - _price_pd["avg_fare_pre"])
+        / _price_pd["avg_fare_pre"] * 100
+    )
+    pct_cf = (
+        (_price_pd[f"p_post_cf_{label}"] - _price_pd[f"p_pre_{label}"])
+        / _price_pd[f"p_pre_{label}"] * 100
+    )
+    pct_obs = (
+        (_price_pd["p_post_obs"] - _price_pd[f"p_pre_{label}"])
+        / _price_pd[f"p_pre_{label}"] * 100
+    )
+
+    measures = [
+        (pct_avg, "Avg fares (post vs pre)",                     "#2ca02c"),
+        (pct_cf,  "Pre observed → Post counterfactual",          "#d62728"),
+        (pct_obs, "Pre observed → Post observed",                "#9467bd"),
+    ]
+    x = np.arange(len(SAMPLE_TREATMENTS))
+    w = 0.8 / len(measures)
+    for i, (vals, lbl, color) in enumerate(measures):
+        bars = ax.bar(x + (i - 1) * w, vals, width=w, label=lbl, color=color)
+        for b, v in zip(bars, vals):
+            if pd.notna(v):
+                va = "bottom" if v >= 0 else "top"
+                ax.text(b.get_x() + b.get_width() / 2, v, f"{v:+.1f}%",
+                        ha="center", va=va, fontsize=8)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(SAMPLE_TREATMENTS, fontsize=11)
+    ax.set_ylabel("% change in price per trip", fontsize=11)
+    ax.set_title(f"Window: {label} before reform", fontsize=12, fontweight="bold")
+    ax.legend(fontsize=9)
+plt.suptitle(
+    "Variation in price per trip by treatment group: three measures",
+    fontsize=13, fontweight="bold",
+)
 plt.tight_layout()
 plt.show()
