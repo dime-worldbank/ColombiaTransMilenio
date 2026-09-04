@@ -207,7 +207,7 @@ display(
 # MAGIC ---
 # MAGIC ## 4. Fare table
 # MAGIC
-# MAGIC For each profile group and fare period, the two most frequent trip values are the zonal (lower) and troncal (higher) fares. Computed over each card's first 30 trips of the month, so heavy travelers do not dominate the mode.
+# MAGIC For each profile group and fare period, the two most frequent trip values are the zonal (lower) and troncal (higher) fares. Computed over each card's first 30 trips of the month.
 
 # COMMAND ----------
 
@@ -895,7 +895,8 @@ else:
 # MAGIC 2. Share of apoyo cards' trips at the subsidized fare, by month (the reform and the glitch must be visible)
 # MAGIC 3. Sample funnel: from all cards to the analysis sample
 # MAGIC 4. Cards per treatment group
-# MAGIC 5. Mean monthly trips by treatment group (raw pre-trends)
+# MAGIC
+# MAGIC Figures 5–11 (monthly line-plot trends) live in **status-figures-2017.py**.
 
 # COMMAND ----------
 
@@ -1007,64 +1008,5 @@ ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{int(v):,}"))
 ax.set_ylabel("Cards", fontsize=12)
 ax.tick_params(axis="x", rotation=30)
 ax.set_title("Cards per treatment group (analysis sample)", fontsize=13, fontweight="bold")
-plt.tight_layout()
-plt.show()
-
-# COMMAND ----------
-
-# DBTITLE 1,Figure 5: mean monthly trips by treatment group
-trends_pd = (
-    spark.table(T5_TABLE)
-    .join(spark.table(T4_TABLE).select("cardnumber", "treatment"), "cardnumber")
-    .groupBy("ymonth", "treatment")
-    .agg(F.avg("n_trips").alias("mean_trips"))
-    .orderBy("ymonth")
-    .toPandas()
-    .pivot(index="ymonth", columns="treatment", values="mean_trips")
-)
-
-fig, ax = plt.subplots(figsize=(12, 6))
-for col in trends_pd.columns:
-    style = "--" if col == "never" else "-"
-    ax.plot(trends_pd.index, trends_pd[col], style, marker="o", markersize=3, linewidth=1.4, label=col)
-ax.axvline(REFORM_MONTH, color="red", linewidth=1.2, linestyle="--", label=f"Reform ({REFORM_MONTH})")
-ax.set_ylabel("Mean monthly trips per card", fontsize=12)
-ax.set_xlabel("Month", fontsize=12)
-ax.tick_params(axis="x", rotation=45)
-ax.set_ylim(bottom=0)
-ax.set_title("Mean monthly trips by treatment group", fontsize=13, fontweight="bold")
-ax.legend(fontsize=9, ncol=2)
-plt.tight_layout()
-plt.show()
-
-# COMMAND ----------
-
-# DBTITLE 1,Figure 6: mean monthly trips by treatment group (excluding infrequent users)
-# Same as Figure 5 but dropping infrequent users (tag_infrequent == 1)
-trends_freq_pd = (
-    spark.table(T5_TABLE)
-    .join(
-        spark.table(T4_TABLE).select("cardnumber", "treatment", "tag_infrequent"),
-        "cardnumber",
-    )
-    .filter(F.coalesce(F.col("tag_infrequent"), F.lit(0)) == 0)
-    .groupBy("ymonth", "treatment")
-    .agg(F.avg("n_trips").alias("mean_trips"))
-    .orderBy("ymonth")
-    .toPandas()
-    .pivot(index="ymonth", columns="treatment", values="mean_trips")
-)
-
-fig, ax = plt.subplots(figsize=(12, 6))
-for col in trends_freq_pd.columns:
-    style = "--" if col == "never" else "-"
-    ax.plot(trends_freq_pd.index, trends_freq_pd[col], style, marker="o", markersize=3, linewidth=1.4, label=col)
-ax.axvline(REFORM_MONTH, color="red", linewidth=1.2, linestyle="--", label=f"Reform ({REFORM_MONTH})")
-ax.set_ylabel("Mean monthly trips per card", fontsize=12)
-ax.set_xlabel("Month", fontsize=12)
-ax.tick_params(axis="x", rotation=45)
-ax.set_ylim(bottom=0)
-ax.set_title("Mean monthly trips by treatment group (removing super infrequent users)", fontsize=13, fontweight="bold")
-ax.legend(fontsize=9, ncol=2)
 plt.tight_layout()
 plt.show()
