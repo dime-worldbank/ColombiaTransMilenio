@@ -211,7 +211,7 @@ write_single_csv(df_panel_out, "panel_2017.csv")
 # MAGIC ---
 # MAGIC ## 6. Fares export → `fares_2017.csv`
 # MAGIC
-# MAGIC The fare table of the sample as built in `prices-calcs.py`: one row per analysis group × fare period × fare type (`zonal`, `troncal`, `tr_zz`, `tr_zt`, `tr_tz`, `tr_tt`), with the modal fare, its frequency and its share. Small and fully labeled, so the strings stay as they are.
+# MAGIC The fare table of the sample as built in `prices-calcs.py`: one row per analysis group × fare period × fare type (`zonal`, `troncal`, `tr_zz`, `tr_zt`, `tr_tz`, `tr_tt`), with the modal fare, its frequency and the % of transactions of that group × period × type paying exactly it (`pct_at_fare`). Small and fully labeled, so the strings stay as they are.
 
 # COMMAND ----------
 
